@@ -44,7 +44,6 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.data.repository.reactive.ReactiveCrudRepository;
-import org.springframework.stereotype.Component;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import com.byeolnaerim.mongodb.FieldsPair.Condition;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.ExecuteBuilder;
@@ -58,13 +57,11 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 
-@Component
 public class MongoQueryBuilder<K> {
 
     private final MongoTemplateResolver<K> resolver;
 	
 	private final static ObjectMapper objectMapper = new ObjectMapper();
-
 
 	private final static ConcurrentHashMap<Class<? extends ReactiveCrudRepository<?, ?>>, Class<?>> entityClassCache = new ConcurrentHashMap<>();
 
