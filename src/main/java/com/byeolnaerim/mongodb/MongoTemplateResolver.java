@@ -11,3 +11,4 @@ public interface MongoTemplateResolver<K> {
  @Nullable ReactiveMongoTransactionManager getTxManager(K key);
  @Nullable TransactionalOperator getTxOperator(K key);
 }
+
