@@ -57,3 +57,22 @@ tasks.withType(JavaExec) {
 tasks.withType(JavaCompile).configureEach {
   options.compilerArgs += ['-parameters']
 }
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java  // java-library에서 만들어주는 컴포넌트
+
+            groupId = project.group
+            artifactId = 'webflux-fe-dev-assistant'
+            version = project.version
+
+            // (나중에 Maven Central 갈 거면 pom 메타데이터를 더 채우면 좋음)
+            pom {
+                name = 'WebFlux Functional Endpoints Development Assistant'
+                description = 'Spring WebFlux functional endpoint 개발 보조 라이브러리'
+            }
+        }
+    }
+    // repositories {} 는 로컬 테스트만 할 거면 아직 안 넣어도 됨 (mavenLocal은 자동)
+}
