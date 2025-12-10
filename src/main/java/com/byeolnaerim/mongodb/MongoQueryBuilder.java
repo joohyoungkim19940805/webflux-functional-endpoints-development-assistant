@@ -50,12 +50,13 @@ import org.springframework.data.repository.reactive.ReactiveCrudRepository;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import com.byeolnaerim.mongodb.FieldsPair.Condition;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.ExecuteBuilder;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.LookupSpec;
 import com.mongodb.ReadPreference;
 import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.result.DeleteResult;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import tools.jackson.databind.ObjectMapper;
 
 
 public class MongoQueryBuilder<K> {
