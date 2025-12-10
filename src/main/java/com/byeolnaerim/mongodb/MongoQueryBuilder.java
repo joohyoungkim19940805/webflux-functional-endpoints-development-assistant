@@ -57,13 +57,14 @@ import com.mongodb.client.result.DeleteResult;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 
 public class MongoQueryBuilder<K> {
 
     private final MongoTemplateResolver<K> resolver;
 	
-	// private final static ObjectMapper objectMapper = new ObjectMapper();
+	private final ObjectMapper objectMapper;
 
 	private final static ConcurrentHashMap<Class<? extends ReactiveCrudRepository<?, ?>>, Class<?>> entityClassCache = new ConcurrentHashMap<>();
 
@@ -71,9 +72,18 @@ public class MongoQueryBuilder<K> {
 	static final double EARTH_RADIUS_M = 6_378_137.0;
 
     public MongoQueryBuilder(MongoTemplateResolver<K> resolver) {
+
+		this( resolver, JsonMapper.builder().build() );
+
+	}
+
+	public MongoQueryBuilder(
+								MongoTemplateResolver<K> resolver,
+								ObjectMapper objectMapper
+	) {
         this.resolver = resolver;
+		this.objectMapper = objectMapper;
     }
-	
 	public static <T> Flux<FieldsPair<String, Object>> extractFieldsPairs(
 		T entity, String... fieldNames
 	) {
@@ -1045,7 +1055,23 @@ public class MongoQueryBuilder<K> {
 		        throw new RuntimeException("Failed to clone entity for history", ex);
 		    }
 		}
-		
+
+		public Mono<Void> createHistory(
+			E e
+		) {
+
+			return createHistory( e, "history", objectMapper );
+
+		}
+
+		public Mono<Void> createHistory(
+			E e, String prefix
+		) {
+
+			return createHistory( e, prefix, objectMapper );
+
+		}
+
 		public Mono<Void> createHistory(
 			E e, ObjectMapper objectMapper
 		) {
@@ -1733,7 +1759,7 @@ public class MongoQueryBuilder<K> {
 			 */
 			public static class Builder {
 
-				private List<Document> outerStages; // ← 추가
+				private List<Document> outerStages = new ArrayList<>(); // ← 추가
 
 				private final LookupSpec spec = new LookupSpec();
 
