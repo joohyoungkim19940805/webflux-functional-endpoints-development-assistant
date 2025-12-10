@@ -14,12 +14,12 @@ import java.util.stream.Collectors;
 import com.byeolnaerim.watch.RouteUtil;
 import com.byeolnaerim.watch.swagger.HandlerInfo.Info;
 import com.byeolnaerim.watch.swagger.HandlerInfo.LayerPosition;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtInvocation;
 import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.visitor.filter.TypeFilter;
+import tools.jackson.databind.json.JsonMapper;
 
 
 public class SwaggerGenerator {
@@ -155,7 +155,7 @@ public class SwaggerGenerator {
 		swagger.put( "x-tagGroups", tagGroups );
 
 		// Swagger JSON 출력
-		ObjectMapper objectMapper = new ObjectMapper();
+		JsonMapper objectMapper = JsonMapper.builder().findAndAddModules().build();
 		return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString( swagger );
 
 	}
