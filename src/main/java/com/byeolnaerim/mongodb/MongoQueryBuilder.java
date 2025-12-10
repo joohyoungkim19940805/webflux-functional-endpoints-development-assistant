@@ -10,12 +10,15 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -47,12 +50,10 @@ import org.springframework.data.repository.reactive.ReactiveCrudRepository;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import com.byeolnaerim.mongodb.FieldsPair.Condition;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.ExecuteBuilder;
-import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.LookupSpec;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mongodb.ReadPreference;
 import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.result.DeleteResult;
-import lombok.Getter;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -61,7 +62,7 @@ public class MongoQueryBuilder<K> {
 
     private final MongoTemplateResolver<K> resolver;
 	
-	private final static ObjectMapper objectMapper = new ObjectMapper();
+	// private final static ObjectMapper objectMapper = new ObjectMapper();
 
 	private final static ConcurrentHashMap<Class<? extends ReactiveCrudRepository<?, ?>>, Class<?>> entityClassCache = new ConcurrentHashMap<>();
 
@@ -88,211 +89,6 @@ public class MongoQueryBuilder<K> {
 
 			} ) );
 		// .onErrorMap( e -> new RuntimeException( "Failed to extract fields: " + e.getMessage(), e ) );
-
-	}
-
-	@Getter
-	public static class PageResult<E> {
-
-		private final List<E> data;
-
-		private final Long totalCount;
-
-		public PageResult() {
-
-			this.data = Collections.emptyList();
-			this.totalCount = 0L;
-
-		}
-
-		public PageResult(
-							Long totalCount
-		) {
-
-			this.data = Collections.emptyList();
-			this.totalCount = totalCount;
-
-		}
-
-		public PageResult(
-							List<E> data
-		) {
-
-			this.data = data;
-			this.totalCount = 0L;
-
-		}
-
-		public PageResult(
-							List<E> data,
-							Long totalCount
-		) {
-
-			this.data = data;
-			this.totalCount = totalCount;
-
-		}
-
-		public boolean isEmpty() { return data == null || data.isEmpty(); }
-
-		public int size() {
-
-			return data == null ? 0 : data.size();
-
-		}
-
-		public static <E> PageResult<E> empty() {
-
-			return new PageResult<>( Collections.emptyList(), 0L );
-
-		}
-
-		public static <E> PageResult<E> of(
-			List<E> data, long totalCount
-		) {
-
-			return new PageResult<>( data, totalCount );
-
-		}
-
-		public <R> PageResult<R> map(
-			Function<? super E, ? extends R> mapper
-		) {
-
-			Objects.requireNonNull( mapper, "mapper" );
-			List<R> mapped = (data == null ? Collections.<E>emptyList() : data)
-				.stream()
-				.map( mapper )
-				.collect( Collectors.toList() );
-			return new PageResult<>( mapped, totalCount );
-
-		}
-
-		/** 총 페이지 수 (pageSize > 0 필요). totalCount가 null이면 0으로 가정 */
-		public int totalPages(
-			int pageSize
-		) {
-
-			if (pageSize <= 0)
-				throw new IllegalArgumentException( "pageSize must be > 0" );
-			long tc = (totalCount == null) ? 0L : totalCount;
-			if (tc == 0L)
-				return 0;
-			return (int) ((tc + pageSize - 1) / pageSize); // ceil
-
-		}
-
-		/** 다음 페이지 존재 여부. page는 0-based. totalCount가 null이면 false로 가정 */
-		public boolean hasNext(
-			int page, int pageSize
-		) {
-
-			if (page < 0 || pageSize <= 0)
-				throw new IllegalArgumentException( "invalid page/pageSize" );
-			long tc = (totalCount == null) ? 0L : totalCount;
-			long shown = (long) (page + 1) * pageSize;
-			return shown < tc;
-
-		}
-
-		public <R> PageResult<R> mapNotNull(
-			Function<? super E, ? extends R> mapper
-		) {
-
-			Objects.requireNonNull( mapper, "mapper" );
-			List<R> mapped = (data == null ? Collections.<E>emptyList() : data)
-				.stream()
-				.map( mapper )
-				.filter( Objects::nonNull )
-				.collect( Collectors.toList() );
-			return new PageResult<>( mapped, totalCount );
-
-		}
-
-		/** 외부에서 리스트를 변경하지 못하게 하는 읽기 전용 뷰 */
-		public List<E> asUnmodifiableData() {
-
-			return Collections.unmodifiableList( data == null ? Collections.emptyList() : data );
-
-		}
-
-		/** 조건으로 data를 필터링 (totalCount는 원본 값 유지) */
-		public PageResult<E> filter(
-			Predicate<? super E> predicate
-		) {
-
-			Objects.requireNonNull( predicate, "predicate" );
-			List<E> filtered = (data == null ? Collections.<E>emptyList() : data)
-				.stream()
-				.filter( predicate )
-				.collect( Collectors.toList() );
-			return new PageResult<>( filtered, totalCount );
-
-		}
-
-		/** 조건으로 data를 필터링하고 totalCount를 재계산 */
-		public PageResult<E> filterAndRecount(
-			Predicate<? super E> predicate
-		) {
-
-			Objects.requireNonNull( predicate, "predicate" );
-			List<E> filtered = (data == null ? Collections.<E>emptyList() : data)
-				.stream()
-				.filter( predicate )
-				.collect( Collectors.toList() );
-			return new PageResult<>( filtered, (long) filtered.size() );
-
-		}
-
-		/** null 요소 제거 (totalCount는 원본 유지). 필요 없으면 생략 가능 */
-		public PageResult<E> filterNotNull() {
-
-			List<E> filtered = (data == null ? Collections.<E>emptyList() : data)
-				.stream()
-				.filter( Objects::nonNull )
-				.collect( Collectors.toList() );
-			return new PageResult<>( filtered, totalCount );
-
-		}
-
-		/** 각 요소에 대해 작업 수행 (체이닝이 필요 없을 때) */
-		public void forEach(
-			Consumer<? super E> action
-		) {
-
-			Objects.requireNonNull( action, "action" );
-			if (data != null)
-				data.forEach( action );
-
-		}
-
-		/** 각 요소에 대해 작업 수행 후 this 반환 (체이닝용) */
-		public PageResult<E> onEach(
-			Consumer<? super E> action
-		) {
-
-			Objects.requireNonNull( action, "action" );
-			if (data != null)
-				data.forEach( action );
-			return this;
-
-		}
-
-		/** 인덱스가 필요한 순회 */
-		public void forEachIndexed(
-			BiConsumer<Integer, ? super E> action
-		) {
-
-			Objects.requireNonNull( action, "action" );
-			if (data == null)
-				return;
-
-			for (int i = 0; i < data.size(); i++) {
-				action.accept( i, data.get( i ) );
-
-			}
-
-		}
 
 	}
 
@@ -942,6 +738,39 @@ public class MongoQueryBuilder<K> {
 		}
 
 		/**
+		 * 엔티티 한 개를 BulkOperations에 반영하는 공통 처리
+		 */
+		private void applyBulkForEntity(
+			E entity, Field idField, ReactiveBulkOperations bulkOps
+		)
+			throws IllegalAccessException {
+
+			Object id = idField.get( entity );
+
+			if (id == null) {
+				// 신규 레코드는 insert
+				bulkOps.insert( entity );
+				return;
+
+			}
+
+			// 기존 레코드는 upsert
+			Query query = Query.query( Criteria.where( "_id" ).is( id ) );
+
+			// Document로 변환 후 _id 제거
+			org.bson.Document doc = new org.bson.Document();
+			reactiveMongoTemplate.getConverter().write( entity, doc );
+			doc.remove( "_id" );
+
+			if (! doc.isEmpty()) {
+				org.bson.Document updateDoc = new org.bson.Document( "$set", doc );
+				Update update = new BasicUpdate( updateDoc );
+				bulkOps.upsert( query, update );
+
+			}
+
+		}
+		/**
 		 * Iterable<E>를 받아 대량 저장(Bulk Upsert)을 수행합니다.
 		 * 
 		 * @param entities
@@ -953,7 +782,48 @@ public class MongoQueryBuilder<K> {
 			Iterable<E> entities
 		) {
 
-			return saveAllBulkUpsert( Flux.fromIterable( entities ) );
+			Objects.requireNonNull( entities, "entities must not be null" );
+
+			// 비어 있으면 바로 종료
+			Iterator<E> it = entities.iterator();
+
+			if (! it.hasNext()) { return Mono.empty(); }
+
+			// 첫 번째 엔티티로부터 타입/ID 필드 정보 추출
+			E first = it.next();
+			Class<?> entityClass = first.getClass();
+			Field idField = findIdField( entityClass );
+			idField.setAccessible( true );
+
+			ReactiveBulkOperations bulkOps = reactiveMongoTemplate
+				.bulkOps(
+					BulkOperations.BulkMode.UNORDERED,
+					entityClass
+				);
+
+			try {
+				// 첫 번째 엔티티 처리
+				applyBulkForEntity( first, idField, bulkOps );
+
+				// 나머지 엔티티 처리
+				while (it.hasNext()) {
+					E entity = it.next();
+					applyBulkForEntity( entity, idField, bulkOps );
+
+				}
+
+			} catch (IllegalAccessException e) {
+				return Mono
+					.error(
+						new RuntimeException( "Failed to access @Id field via reflection", e )
+					);
+
+			} finally {
+				idField.setAccessible( false );
+
+			}
+
+			return bulkOps.execute();
 
 		}
 
@@ -969,7 +839,7 @@ public class MongoQueryBuilder<K> {
 			Collection<E> entities
 		) {
 
-			return saveAllBulkUpsert( Flux.fromIterable( entities ) );
+			return saveAllBulkUpsert( (Iterable<E>) entities );
 
 		}
 
@@ -987,71 +857,98 @@ public class MongoQueryBuilder<K> {
 			Flux<E> entityFlux
 		) {
 
-			return entityFlux
-				.collectList()
-				.flatMap( entities -> {
+			AtomicReference<ReactiveBulkOperations> bulkRef = new AtomicReference<>();
+			AtomicReference<Field> idFieldRef = new AtomicReference<>();
+			AtomicBoolean hasValue = new AtomicBoolean( false );
 
-					if (entities.isEmpty()) {
-						return Mono.empty(); // 비어있으면 아무 작업도 하지 않음
+			return entityFlux
+				.flatMap( entity -> {
+					hasValue.set( true );
+
+					ReactiveBulkOperations bulkOps = bulkRef.get();
+					Field idField = idFieldRef.get();
+
+					// 첫 요소에서 lazy init
+					if (bulkOps == null) {
+						Class<?> entityClass = entity.getClass();
+						Field f = findIdField( entityClass );
+						f.setAccessible( true );
+
+						ReactiveBulkOperations newBulk = reactiveMongoTemplate
+							.bulkOps( BulkOperations.BulkMode.UNORDERED, entityClass );
+
+						bulkRef.set( newBulk );
+						idFieldRef.set( f );
+
+						bulkOps = newBulk;
+						idField = f;
 
 					}
 
-					// 첫 번째 엔티티를 기반으로 클래스 타입을 가져옵니다.
-					Class<?> entityClass = entities.get( 0 ).getClass();
-					Field idField = findIdField( entityClass );
-
-					ReactiveBulkOperations bulkOps = reactiveMongoTemplate
-						.bulkOps(
-							BulkOperations.BulkMode.UNORDERED,
-							entityClass
-						);
-
 					try {
+						Object id = idField.get( entity );
 
-						for (E entity : entities) {
-							// 캐시된 Field 객체를 사용해 ID 값을 가져옵니다.
-							Object id = idField.get( entity );
-
-							if (id == null) {
-								// 신규 레코드는 insert로
-								bulkOps.insert( entity );
-								continue;
-
-							}
-
-							Query query = Query.query( Criteria.where( "_id" ).is( id ) );
-							// Document로 변환 후 _id 필드를 제거하여 업데이트 시 중복 키 오류를 방지합니다.
-							org.bson.Document doc = new org.bson.Document();
-							reactiveMongoTemplate.getConverter().write( entity, doc );
-							doc.remove( "_id" );
-
-							if (! doc.isEmpty()) {
-								// ✅ 실제로 $set으로 감싸서 Update 생성
-								org.bson.Document updateDoc = new org.bson.Document( "$set", doc );
-
-								Update update = new BasicUpdate( updateDoc );
-
-								bulkOps.upsert( query, update );
-
-							}
+						if (id == null) {
+							// 신규 레코드 → insert
+							bulkOps.insert( entity );
+							return Mono.empty();
 
 						}
 
-					} catch (IllegalAccessException e) {
-						// 필드 접근 실패 시 에러를 전파합니다.
-						return Mono.error( new RuntimeException( "Failed to access @Id field via reflection", e ) );
+						Query query = Query.query( Criteria.where( "_id" ).is( id ) );
 
-					} finally {
+						org.bson.Document doc = new org.bson.Document();
+						reactiveMongoTemplate.getConverter().write( entity, doc );
+						doc.remove( "_id" );
+
+						if (! doc.isEmpty()) {
+							org.bson.Document updateDoc = new org.bson.Document( "$set", doc );
+							Update update = new BasicUpdate( updateDoc );
+							bulkOps.upsert( query, update );
+
+						}
+
+						return Mono.empty();
+
+					} catch (IllegalAccessException e) {
+						return Mono
+							.error(
+								new RuntimeException( "Failed to access @Id field via reflection", e )
+							);
+
+					}
+
+				} )
+				// 모든 엔티티에 대해 bulk 작업 쌓기 끝난 뒤 execute
+				.then(
+					Mono.defer( () -> {
+
+						if (! hasValue.get()) {
+							// 비어있는 Flux 였으면 아무 작업도 안 함
+							return Mono.empty();
+
+						}
+
+						ReactiveBulkOperations bulkOps = bulkRef.get();
+
+						if (bulkOps == null) { return Mono.empty(); }
+
+						return bulkOps.execute();
+
+					} )
+				)
+				// 성공/실패/취소 어떤 경우든 @Id 필드 접근 권한 원복
+				.doFinally( signalType -> {
+					Field idField = idFieldRef.get();
+
+					if (idField != null) {
 						idField.setAccessible( false );
 
 					}
 
-					return bulkOps.execute();
-
 				} );
 
 		}
-
 		public Mono<DeleteResult> delete(
 			E e
 		) {
@@ -1784,7 +1681,7 @@ public class MongoQueryBuilder<K> {
 
 			// // 최종 결과물 (executeLookup에서 사용)
 			// private String from;
-			private List<Document> outerStages; // ← 추가
+			private List<Document> outerStages = new ArrayList<>();
 
 			public List<Document> getOuterStages() { return outerStages; }
 
@@ -4243,6 +4140,216 @@ public class MongoQueryBuilder<K> {
 		return new ExecuteCustomClassBuilder<>( key, collectionName );
 	}
 
+
+	public static class PageResult<E> {
+
+		private final List<E> data;
+
+		private final Long totalCount;
+
+		public List<E> getData() { return this.data; }
+
+		public Long getTotalCount() { return this.totalCount; }
+
+		public PageResult() {
+
+			this.data = Collections.emptyList();
+			this.totalCount = 0L;
+
+		}
+
+		public PageResult(
+							Long totalCount
+		) {
+
+			this.data = Collections.emptyList();
+			this.totalCount = totalCount;
+
+		}
+
+		public PageResult(
+							List<E> data
+		) {
+
+			this.data = data;
+			this.totalCount = 0L;
+
+		}
+
+		public PageResult(
+							List<E> data,
+							Long totalCount
+		) {
+
+			this.data = data;
+			this.totalCount = totalCount;
+
+		}
+
+		public boolean isEmpty() { return data == null || data.isEmpty(); }
+
+		public int size() {
+
+			return data == null ? 0 : data.size();
+
+		}
+
+		public static <E> PageResult<E> empty() {
+
+			return new PageResult<>( Collections.emptyList(), 0L );
+
+		}
+
+		public static <E> PageResult<E> of(
+			List<E> data, long totalCount
+		) {
+
+			return new PageResult<>( data, totalCount );
+
+		}
+
+		public <R> PageResult<R> map(
+			Function<? super E, ? extends R> mapper
+		) {
+
+			Objects.requireNonNull( mapper, "mapper" );
+			List<R> mapped = (data == null ? Collections.<E>emptyList() : data)
+				.stream()
+				.map( mapper )
+				.collect( Collectors.toList() );
+			return new PageResult<>( mapped, totalCount );
+
+		}
+
+		/** 총 페이지 수 (pageSize > 0 필요). totalCount가 null이면 0으로 가정 */
+		public int totalPages(
+			int pageSize
+		) {
+
+			if (pageSize <= 0)
+				throw new IllegalArgumentException( "pageSize must be > 0" );
+			long tc = (totalCount == null) ? 0L : totalCount;
+			if (tc == 0L)
+				return 0;
+			return (int) ((tc + pageSize - 1) / pageSize); // ceil
+
+		}
+
+		/** 다음 페이지 존재 여부. page는 0-based. totalCount가 null이면 false로 가정 */
+		public boolean hasNext(
+			int page, int pageSize
+		) {
+
+			if (page < 0 || pageSize <= 0)
+				throw new IllegalArgumentException( "invalid page/pageSize" );
+			long tc = (totalCount == null) ? 0L : totalCount;
+			long shown = (long) (page + 1) * pageSize;
+			return shown < tc;
+
+		}
+
+		public <R> PageResult<R> mapNotNull(
+			Function<? super E, ? extends R> mapper
+		) {
+
+			Objects.requireNonNull( mapper, "mapper" );
+			List<R> mapped = (data == null ? Collections.<E>emptyList() : data)
+				.stream()
+				.map( mapper )
+				.filter( Objects::nonNull )
+				.collect( Collectors.toList() );
+			return new PageResult<>( mapped, totalCount );
+
+		}
+
+		/** 외부에서 리스트를 변경하지 못하게 하는 읽기 전용 뷰 */
+		public List<E> asUnmodifiableData() {
+
+			return Collections.unmodifiableList( data == null ? Collections.emptyList() : data );
+
+		}
+
+		/** 조건으로 data를 필터링 (totalCount는 원본 값 유지) */
+		public PageResult<E> filter(
+			Predicate<? super E> predicate
+		) {
+
+			Objects.requireNonNull( predicate, "predicate" );
+			List<E> filtered = (data == null ? Collections.<E>emptyList() : data)
+				.stream()
+				.filter( predicate )
+				.collect( Collectors.toList() );
+			return new PageResult<>( filtered, totalCount );
+
+		}
+
+		/** 조건으로 data를 필터링하고 totalCount를 재계산 */
+		public PageResult<E> filterAndRecount(
+			Predicate<? super E> predicate
+		) {
+
+			Objects.requireNonNull( predicate, "predicate" );
+			List<E> filtered = (data == null ? Collections.<E>emptyList() : data)
+				.stream()
+				.filter( predicate )
+				.collect( Collectors.toList() );
+			return new PageResult<>( filtered, (long) filtered.size() );
+
+		}
+
+		/** null 요소 제거 (totalCount는 원본 유지). 필요 없으면 생략 가능 */
+		public PageResult<E> filterNotNull() {
+
+			List<E> filtered = (data == null ? Collections.<E>emptyList() : data)
+				.stream()
+				.filter( Objects::nonNull )
+				.collect( Collectors.toList() );
+			return new PageResult<>( filtered, totalCount );
+
+		}
+
+		/** 각 요소에 대해 작업 수행 (체이닝이 필요 없을 때) */
+		public void forEach(
+			Consumer<? super E> action
+		) {
+
+			Objects.requireNonNull( action, "action" );
+			if (data != null)
+				data.forEach( action );
+
+		}
+
+		/** 각 요소에 대해 작업 수행 후 this 반환 (체이닝용) */
+		public PageResult<E> onEach(
+			Consumer<? super E> action
+		) {
+
+			Objects.requireNonNull( action, "action" );
+			if (data != null)
+				data.forEach( action );
+			return this;
+
+		}
+
+		/** 인덱스가 필요한 순회 */
+		public void forEachIndexed(
+			BiConsumer<Integer, ? super E> action
+		) {
+
+			Objects.requireNonNull( action, "action" );
+			if (data == null)
+				return;
+
+			for (int i = 0; i < data.size(); i++) {
+				action.accept( i, data.get( i ) );
+
+			}
+
+		}
+
+	}
+
+
 	public static class ResultTuple<L, R> {
 
 		private String leftName; // 현재 쿼리 빌더의 executeClass 이름
@@ -4330,4 +4437,33 @@ public class MongoQueryBuilder<K> {
 
 	}
 
+	public final class PageStream<T> {
+
+		private final Flux<T> data;
+
+		private final Mono<Long> totalCount;
+
+		public PageStream(
+							Flux<T> data,
+							Mono<Long> totalCount
+		) {
+
+			this.data = data;
+			this.totalCount = totalCount;
+
+		}
+
+		public Flux<T> data() {
+
+			return data;
+
+		}
+
+		public Mono<Long> totalCount() {
+
+			return totalCount;
+
+		}
+
+	}
 }

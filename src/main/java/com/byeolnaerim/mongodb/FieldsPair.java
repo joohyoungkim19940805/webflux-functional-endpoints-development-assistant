@@ -3,7 +3,6 @@ package com.byeolnaerim.mongodb;
 
 import java.time.Duration;
 import java.util.Map;
-import lombok.Getter;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -41,8 +40,9 @@ public class FieldsPair<K, V> implements Map.Entry<K, V> {
 
 	private V fieldValue;
 
-	@Getter
 	private Condition queryType;
+
+	public Condition getQueryType() { return this.queryType; }
 
 	public FieldsPair(
 						K fieldName,
