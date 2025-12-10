@@ -1,0 +1,113 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "com.byeolnaerim",
+    "module": "webflux-fe-dev-assistant",
+    "version": "0.0.1-SNAPSHOT",
+    "attributes": {
+      "org.gradle.status": "integration"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.2.1"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 21,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "org.springframework.data",
+          "module": "spring-data-mongodb"
+        },
+        {
+          "group": "org.springframework",
+          "module": "spring-webflux"
+        },
+        {
+          "group": "io.projectreactor",
+          "module": "reactor-core"
+        }
+      ],
+      "files": [
+        {
+          "name": "webflux-fe-dev-assistant-0.0.1-SNAPSHOT.jar",
+          "url": "webflux-fe-dev-assistant-0.0.1-SNAPSHOT.jar",
+          "size": 189164,
+          "sha512": "3aa8908db26b79bfd6452ca25486ab8356386920b07643c4eee80231e4a432ed1d6ed4781ad81e69d5de607e875a842596853da9de5399e38902b290865118b4",
+          "sha256": "858a1b1cc65b40cad5152092f1280fb7b8db1a26727c97baf2d8b9c1665e747d",
+          "sha1": "1802d9f7689c8f553cdf893643a5992901ba8a81",
+          "md5": "51f1b8bb6f4ff53e491b963dfeda7b7b"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 21,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "tools.jackson.core",
+          "module": "jackson-databind"
+        },
+        {
+          "group": "com.github.javaparser",
+          "module": "javaparser-core",
+          "version": {
+            "requires": "3.27.1"
+          }
+        },
+        {
+          "group": "com.github.javaparser",
+          "module": "javaparser-symbol-solver-core",
+          "version": {
+            "requires": "3.27.1"
+          }
+        },
+        {
+          "group": "fr.inria.gforge.spoon",
+          "module": "spoon-core",
+          "version": {
+            "requires": "11.2.1"
+          }
+        },
+        {
+          "group": "org.springframework.data",
+          "module": "spring-data-mongodb"
+        },
+        {
+          "group": "org.springframework",
+          "module": "spring-webflux"
+        },
+        {
+          "group": "io.projectreactor",
+          "module": "reactor-core"
+        }
+      ],
+      "files": [
+        {
+          "name": "webflux-fe-dev-assistant-0.0.1-SNAPSHOT.jar",
+          "url": "webflux-fe-dev-assistant-0.0.1-SNAPSHOT.jar",
+          "size": 189164,
+          "sha512": "3aa8908db26b79bfd6452ca25486ab8356386920b07643c4eee80231e4a432ed1d6ed4781ad81e69d5de607e875a842596853da9de5399e38902b290865118b4",
+          "sha256": "858a1b1cc65b40cad5152092f1280fb7b8db1a26727c97baf2d8b9c1665e747d",
+          "sha1": "1802d9f7689c8f553cdf893643a5992901ba8a81",
+          "md5": "51f1b8bb6f4ff53e491b963dfeda7b7b"
+        }
+      ]
+    }
+  ]
+}
