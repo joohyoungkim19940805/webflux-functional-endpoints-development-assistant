@@ -219,19 +219,19 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	public static void main(
-		String[] args
-	) {
-
-		SwaggerJsonFileWatcher watcher = new SwaggerJsonFileWatcher(
-			SwaggerJsonFileWatcher.Config
-				.builder()
-				.watchDirectory( "src/main/java" )
-				.swaggerOutputFile( "src/main/resources/static/swagger.json" )
-				.build()
-		);
-		watcher.generateSwaggerJson(); // 단발 실행
-
-	}
+	// public static void main(
+	// String[] args
+	// ) {
+	//
+	// SwaggerJsonFileWatcher watcher = new SwaggerJsonFileWatcher(
+	// SwaggerJsonFileWatcher.Config
+	// .builder()
+	// .watchDirectory( "src/main/java" )
+	// .swaggerOutputFile( "src/main/resources/static/swagger.json" )
+	// .build()
+	// );
+	// watcher.generateSwaggerJson(); // 단발 실행
+	//
+	// }
 
 }

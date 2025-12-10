@@ -28,7 +28,7 @@ import spoon.reflect.factory.Factory;
 import spoon.reflect.reference.CtFieldReference;
 import spoon.reflect.visitor.filter.AbstractFilter;
 import spoon.support.JavaOutputProcessor;
-import spoon.support.SpoonClassNotFoundException;
+// import spoon.support.SpoonClassNotFoundException;
 
 
 public class EntityFileWatcher extends AbstractWatcher {
@@ -332,23 +332,23 @@ public class EntityFileWatcher extends AbstractWatcher {
 		return changed;
 
 	}
-
-	public static void main(
-		String[] args
-	) {
-
-		EntityFileWatcher watcher = new EntityFileWatcher(
-			EntityFileWatcher.Config
-				.builder()
-				.collectionNameEnum( "CollectionNames" )
-				.collectionNamePackage( "com.byeolnaerim.util" )
-				.rootPath( "src/main/java" )
-				.fieldPackage( "com.byeolnaerim.util.fields" )
-				.entityPackage( "com.byeolnaerim.entity" )
-				.build()
-		);
-		watcher.runGenerateTask().block();
-
-	}
+	//
+	// public static void main(
+	// String[] args
+	// ) {
+	//
+	// EntityFileWatcher watcher = new EntityFileWatcher(
+	// EntityFileWatcher.Config
+	// .builder()
+	// .collectionNameEnum( "CollectionNames" )
+	// .collectionNamePackage( "com.byeolnaerim.util" )
+	// .rootPath( "src/main/java" )
+	// .fieldPackage( "com.byeolnaerim.util.fields" )
+	// .entityPackage( "com.byeolnaerim.entity" )
+	// .build()
+	// );
+	// watcher.runGenerateTask().block();
+	//
+	// }
 
 }

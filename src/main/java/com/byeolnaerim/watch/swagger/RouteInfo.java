@@ -3,13 +3,9 @@ package com.byeolnaerim.watch.swagger;
 
 import java.util.ArrayList;
 import java.util.List;
-import lombok.Getter;
-import lombok.Setter;
 import spoon.reflect.code.CtExpression;
 
 
-@Getter
-@Setter
 public class RouteInfo {
 
 	private String httpMethod;
@@ -33,6 +29,59 @@ public class RouteInfo {
 
 	private String childGroup; // 하위 그룹 이름 (예: "oauth2-search")
 
+	public String getHttpMethod() { return httpMethod; }
+
+	public void setHttpMethod(
+		String httpMethod
+	) { this.httpMethod = httpMethod; }
+
+	public String getUrl() { return url; }
+
+	public void setUrl(
+		String url
+	) { this.url = url; }
+
+	public String getEndpoint() { return endpoint; }
+
+	public void setEndpoint(
+		String endpoint
+	) { this.endpoint = endpoint; }
+
+	public List<String> getAcceptMediaTypes() { return acceptMediaTypes; }
+
+	public void setAcceptMediaTypes(
+		List<String> acceptMediaTypes
+	) { this.acceptMediaTypes = acceptMediaTypes; }
+
+	public CtExpression<?> getHandlerInfoCtExpression() { return handlerInfoCtExpression; }
+
+	public void setHandlerInfoCtExpression(
+		CtExpression<?> handlerInfoCtExpression
+	) { this.handlerInfoCtExpression = handlerInfoCtExpression; }
+
+	public HandlerInfo getHandlerInfo() { return handlerInfo; }
+
+	public void setHandlerInfo(
+		HandlerInfo handlerInfo
+	) { this.handlerInfo = handlerInfo; }
+
+	public List<String> getSecuritySchemes() { return securitySchemes; }
+
+	public void setSecuritySchemes(
+		List<String> securitySchemes
+	) { this.securitySchemes = securitySchemes; }
+
+	public String getParentGroup() { return parentGroup; }
+
+	public void setParentGroup(
+		String parentGroup
+	) { this.parentGroup = parentGroup; }
+
+	public String getChildGroup() { return childGroup; }
+
+	public void setChildGroup(
+		String childGroup
+	) { this.childGroup = childGroup; }
 	@Override
 	public String toString() {
 

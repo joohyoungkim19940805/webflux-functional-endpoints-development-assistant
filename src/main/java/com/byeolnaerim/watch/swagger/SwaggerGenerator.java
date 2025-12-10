@@ -11,10 +11,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.byeolnaerim.watch.RouteUtil;
 import com.byeolnaerim.watch.swagger.HandlerInfo.Info;
 import com.byeolnaerim.watch.swagger.HandlerInfo.LayerPosition;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtInvocation;
@@ -261,6 +261,7 @@ public class SwaggerGenerator {
 
 	}
 
+	@SuppressWarnings("unchecked")
 	private static Map<String, Object> buildSchema(
 		HandlerInfo.Info info, Map<String, Object> schemas
 	) {
@@ -397,7 +398,6 @@ public class SwaggerGenerator {
 
 				}
 
-				@SuppressWarnings("unchecked")
 				Map<String, Object> _items = (Map<String, Object>) prevMap.get( "items" );
 				Map<String, Object> nextMap = mapType( info.getGenericTypes().get( i ), schemas );
 				putMap.accept( _items, nextMap );

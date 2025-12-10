@@ -1,14 +1,15 @@
 //build.gradle
 plugins {
-	id 'java'
-	id 'org.springframework.boot' version '3.5.5'
-	id 'io.spring.dependency-management' version '1.1.7'
+    id 'java-library'                               // 라이브러리용
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'maven-publish'                              // 배포용
 }
 
-group = 'com.npl.auction.platform-auth'
-version = '0.0.1-SNAPSHOT'
-
-
+group = 'com.byeolnaerim'
+version = '0.0.1-SNAPSHOT' //-alpha.1
+jar {
+    archiveBaseName = 'webflux-fe-dev-assistant'
+}
 java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
@@ -25,42 +26,27 @@ repositories {
   maven { url = uri('https://repo.spring.io/milestone') } 
   maven { url = uri('https://repo.spring.io/snapshot') } 
 }
-
-dependencies {    
-    implementation 'org.springframework.boot:spring-boot-starter-webflux'
-	testImplementation 'org.springframework.boot:spring-boot-starter-test'
-	compileOnly 'org.springframework.boot:spring-boot-devtools'
-	testImplementation 'junit:junit:4.13.2'
-	testImplementation 'de.flapdoodle.embed:de.flapdoodle.embed.mongo:4.12.2'
-	implementation 'org.springdoc:springdoc-openapi-starter-webflux-api:2.5.0'
-	implementation 'org.springdoc:springdoc-openapi-starter-webflux-ui:2.5.0'
-	implementation 'io.jsonwebtoken:jjwt-api:0.12.5'
-	implementation 'io.jsonwebtoken:jjwt-impl:0.12.5'
-	implementation 'io.jsonwebtoken:jjwt-jackson:0.12.5'
-	annotationProcessor 'org.projectlombok:lombok:1.18.42'
-	compileOnly 'org.projectlombok:lombok:1.18.42'
-	implementation 'nz.net.ultraq.thymeleaf:thymeleaf-layout-dialect:3.3.0'
-	implementation 'fr.inria.gforge.spoon:spoon-core:11.1.0'
-	implementation 'software.amazon.awssdk:netty-nio-client:2.31.47'
-	implementation 'software.amazon.awssdk:s3:2.31.47'
-	implementation 'software.amazon.awssdk:auth:2.31.47'
-	implementation 'com.github.ulisesbocchio:jasypt-spring-boot-starter:3.0.5'
-    implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
-    implementation 'com.fasterxml.jackson.core:jackson-core:2.16.1'
-    implementation 'com.fasterxml.jackson.core:jackson-annotations:2.16.1'
-	implementation 'com.github.javaparser:javaparser-core:3.26.2'
-	implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.26.2'
-    implementation 'org.apache.commons:commons-csv:1.13.0'
-	implementation 'org.xerial.snappy:snappy-java:1.1.10.8'
-	implementation 'com.github.luben:zstd-jni:1.5.7-4'
-}
-
-configurations.all {
-    resolutionStrategy {
-        force 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
-        force 'com.fasterxml.jackson.core:jackson-core:2.16.1'
-        force 'com.fasterxml.jackson.core:jackson-annotations:2.16.1'
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.boot:spring-boot-dependencies:4.0.0"
     }
+}
+dependencies {    
+	api 'org.springframework.data:spring-data-mongodb'
+	api 'org.springframework:spring-webflux'
+	api 'io.projectreactor:reactor-core'
+	
+	implementation 'com.fasterxml.jackson.core:jackson-databind'
+	
+	implementation 'com.github.javaparser:javaparser-core:3.27.1'
+    implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.27.1'
+    
+    implementation 'fr.inria.gforge.spoon:spoon-core:11.2.1'
+    
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.0.1'
+    testImplementation 'de.flapdoodle.embed:de.flapdoodle.embed.mongo:4.21.0'
+    
+    compileOnly 'org.jspecify:jspecify:1.0.0'
 }
 
 tasks.withType(JavaExec) {
