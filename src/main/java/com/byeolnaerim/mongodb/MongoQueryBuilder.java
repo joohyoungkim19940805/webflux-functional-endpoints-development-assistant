@@ -575,13 +575,13 @@ public class MongoQueryBuilder<K> {
 
 		protected ReactiveMongoTemplate reactiveMongoTemplate;
 
-		protected Mono<Query> queryMono;
+		// protected Mono<Query> queryMono;
 
 		protected Mono<Class<E>> executeClassMono;
 
 		protected String collectionName;
 
-		protected FieldBuilder<E> fieldBuilder = new FieldBuilder<>();
+		protected FieldBuilder<E> fieldBuilder = new FieldBuilder<>( LogicalOperator.AND );
 
 		protected AbstractQueryBuilder<E, T> executeBuilder;
 
@@ -1199,6 +1199,7 @@ public class MongoQueryBuilder<K> {
 			LogicalOperator logicalOperator
 		) {
 
+			this.fieldBuilder = new FieldBuilder<>( logicalOperator );
 			return this.fieldBuilder;
 
 		}
@@ -1287,8 +1288,6 @@ public class MongoQueryBuilder<K> {
 
 				this.keyType = k;
 				this.valueType = v;
-				System.out.println( this.keyType );
-				System.out.println( this.valueType );
 
 				this.keyConverter = (Document kk) -> {
 					Object key = kk.get( "_id" );
@@ -1487,134 +1486,96 @@ public class MongoQueryBuilder<K> {
 			}
 
 			// 내부: 파이프라인 구성/실행
-			private <R2> Mono<Map<KK, V>> buildAndRun(
-				LookupCtx<R2> lookup, Sort dummy
-			) {
+			private <R2> Mono<Map<KK, V>> buildAndRun(LookupCtx<R2> lookup, Sort dummy) {
 
-				if (keyFields.isEmpty()) { throw new IllegalStateException( "group by keys are not specified." ); }
+			    if (keyFields.isEmpty()) throw new IllegalStateException("group by keys are not specified.");
+			    if (!hasAccumulator) count();
 
-				if (! hasAccumulator) {
-					// 기본 count
-					count();
+			    Mono<Class<E>> leftClassMono = executeClassMono;
 
-				}
+			    return Mono.zip(fieldBuilder.buildCriteria(), leftClassMono)
+			        .flatMap(tuple -> {
+			            Optional<Criteria> leftMatch = tuple.getT1();
+			            Class<E> leftClass = tuple.getT2();
 
-				Mono<Class<E>> leftClassMono = executeClassMono;
+			            String leftColl = (collectionName != null && !collectionName.isBlank())
+			                ? collectionName
+			                : reactiveMongoTemplate.getCollectionName(leftClass);
 
-				return Mono
-					.zip( fieldBuilder.buildCriteria(), leftClassMono )
-					.flatMap( tuple -> {
-						Optional<Criteria> leftMatch = tuple.getT1();
-						Class<E> leftClass = tuple.getT2();
+			            List<AggregationOperation> ops = new ArrayList<>();
+			            leftMatch.ifPresent(c -> ops.add(Aggregation.match(c)));
 
-						String leftColl = (collectionName != null && ! collectionName.isBlank())
-							? collectionName
-							: reactiveMongoTemplate.getCollectionName( leftClass );
+			            Mono<List<AggregationOperation>> opsMono =
+			                (lookup == null)
+			                    ? Mono.just(ops)
+			                    : lookup.rightClass().map(rightClass -> {
+			                        String rightColl = (lookup.rightCollectionName() != null && !lookup.rightCollectionName().isBlank())
+			                            ? lookup.rightCollectionName()
+			                            : reactiveMongoTemplate.getCollectionName(rightClass);
 
-						java.util.List<AggregationOperation> ops = new java.util.ArrayList<>();
-						leftMatch.ifPresent( c -> ops.add( Aggregation.match( c ) ) );
+			                        String rightAs = (lookup.spec.as != null && !lookup.spec.as.isBlank())
+			                            ? lookup.spec.as
+			                            : rightClass.getSimpleName();
 
-						// ----- optional $lookup -----
-						if (lookup != null) {
-							Class<R2> rightClass = lookup.rightClass();
-							String rightColl = (lookup.rightCollectionName() != null && ! lookup.rightCollectionName().isBlank())
-								? lookup.rightCollectionName()
-								: reactiveMongoTemplate.getCollectionName( rightClass );
+			                        Document lk = new Document("from", rightColl).append("as", rightAs);
 
-							String rightAs = (lookup.spec.as != null && ! lookup.spec.as.isBlank())
-								? lookup.spec.as
-								: rightClass.getSimpleName();
+			                        if (lookup.spec.localField != null && lookup.spec.foreignField != null) {
+			                            lk.append("localField", lookup.spec.localField)
+			                              .append("foreignField", lookup.spec.foreignField);
+			                        } else {
+			                            lk.append("let", Optional.ofNullable(lookup.spec.letDoc).orElseGet(Document::new))
+			                              .append("pipeline", Optional.ofNullable(lookup.spec.pipelineDocs).orElseGet(List::of));
+			                        }
 
-							Document lk = new Document( "from", rightColl ).append( "as", rightAs );
+			                        ops.add(ctx -> new Document("$lookup", lk));
 
-							if (lookup.spec.localField != null && lookup.spec.foreignField != null) {
-								lk
-									.append( "localField", lookup.spec.localField )
-									.append( "foreignField", lookup.spec.foreignField );
+			                        if (lookup.spec.unwind) {
+			                            ops.add(ctx -> new Document(
+			                                "$unwind",
+			                                new Document("path", "$" + rightAs)
+			                                    .append("preserveNullAndEmptyArrays", lookup.spec.preserveNullAndEmptyArrays)
+			                            ));
+			                        }
 
-							} else {
-								lk
-									.append( "let", Optional.ofNullable( lookup.spec.letDoc ).orElseGet( Document::new ) )
-									.append( "pipeline", Optional.ofNullable( lookup.spec.pipelineDocs ).orElseGet( java.util.List::of ) );
+			                        if (lookup.spec.getOuterStages() != null) {
+			                            for (Document st : lookup.spec.getOuterStages()) {
+			                                ops.add(ctx -> st);
+			                            }
+			                        }
 
-							}
+			                        return ops;
+			                    });
 
-							ops.add( ctx -> new Document( "$lookup", lk ) );
+			            return opsMono.flatMap(opList -> {
+			                Object groupId = (keyFields.size() == 1)
+			                    ? "$" + keyFields.get(0)
+			                    : new Document().append(keyFields.get(0), "$" + keyFields.get(0)); // 아래에서 제대로 채움
 
-							if (lookup.spec.unwind) {
-								ops
-									.add(
-										ctx -> new Document(
-											"$unwind",
-											new Document( "path", "$" + rightAs )
-												.append( "preserveNullAndEmptyArrays", lookup.spec.preserveNullAndEmptyArrays )
-										)
-									);
+			                if (keyFields.size() > 1) {
+			                    Document gid = new Document();
+			                    for (String k : keyFields) gid.append(k, "$" + k);
+			                    groupId = gid;
+			                }
 
-							}
+			                Document groupBody = new Document("_id", groupId);
+			                for (String as : accumulators.keySet()) groupBody.append(as, accumulators.get(as));
+			                opList.add(ctx -> new Document("$group", groupBody));
 
-							if (lookup.spec.getOuterStages() != null) {
+			                Aggregation agg = applyAggOptions(Aggregation.newAggregation(opList));
 
-								for (Document st : lookup.spec.getOuterStages()) {
-									ops.add( ctx -> st );
+			                Flux<Document> flux = (collectionName != null && !collectionName.isBlank())
+			                    ? reactiveMongoTemplate.aggregate(agg, leftColl, Document.class)
+			                    : reactiveMongoTemplate.aggregate(agg, leftClass, Document.class);
 
-								}
-
-							}
-
-						}
-
-						// ----- $group -----
-						Object groupId;
-
-						if (keyFields.size() == 1) {
-							groupId = "$" + keyFields.get( 0 ); // 단일 키
-
-						} else {
-							Document gid = new Document();
-							for (String k : keyFields)
-								gid.append( k, "$" + k ); // 복합 키
-							groupId = gid;
-
-						}
-
-						Document groupBody = new Document( "_id", groupId );
-
-						// 누적기들 붙이기
-						for (String as : accumulators.keySet()) {
-							groupBody.append( as, accumulators.get( as ) );
-
-						}
-
-						ops.add( ctx -> new Document( "$group", groupBody ) );
-
-						Aggregation agg = applyAggOptions( Aggregation.newAggregation( ops ) );
-
-						Flux<Document> flux = (collectionName != null && ! collectionName.isBlank())
-							? reactiveMongoTemplate.aggregate( agg, leftColl, Document.class )
-							: reactiveMongoTemplate.aggregate( agg, leftClass, Document.class );
-
-						return flux
-							.collect(
-								LinkedHashMap::new,
-								(LinkedHashMap<KK, V> map, Document d) -> {
-									KK key = this.keyConverter.apply( d );
-									// value doc은 _id 제거 후 valueClass로 매핑
-									Document vd = new Document( d );
-									vd.remove( "_id" );
-									V v = this.valueConverter.apply( vd );
-									// @SuppressWarnings("unchecked")
-									// V val = (valueClass == Document.class)
-									// ? (V) v
-									// : reactiveMongoTemplate.getConverter().read( V, v );
-									map.put( key, v );
-
-								}
-							)
-							.single(); // empty면 {} 반환
-
-					} );
-
+			                return flux.collect(LinkedHashMap::new, (LinkedHashMap<KK, V> map, Document d) -> {
+			                    KK key = this.keyConverter.apply(d);
+			                    Document vd = new Document(d);
+			                    vd.remove("_id");
+			                    V v = this.valueConverter.apply(vd);
+			                    map.put(key, v);
+			                });
+			            });
+			        });
 			}
 
 			// $lookup 컨텍스트 Helper
@@ -1634,9 +1595,9 @@ public class MongoQueryBuilder<K> {
 
 				}
 
-				Class<R2> rightClass() {
+				Mono<Class<R2>> rightClass() {
 
-					return rightBuilder.getExecuteClassMono().blockOptional().orElseThrow();
+					return rightBuilder.getExecuteClassMono();
 
 				}
 
@@ -2231,10 +2192,26 @@ public class MongoQueryBuilder<K> {
 
 			private Deque<CriteriaGroup> criteriaStack = new ArrayDeque<>();
 
+			/* public FieldBuilder() {
+			 * 
+			 * // 기본적으로 AND 그룹으로 시작
+			 * criteriaStack.push( new CriteriaGroup( LogicalOperator.AND ) );
+			 * 
+			 * } */
+
 			public FieldBuilder() {
 
-				// 기본적으로 AND 그룹으로 시작
-				criteriaStack.push( new CriteriaGroup( LogicalOperator.AND ) );
+				this( LogicalOperator.AND );
+
+			}
+
+			public FieldBuilder(
+								LogicalOperator rootOperator
+			) {
+
+				LogicalOperator op = (rootOperator == null) ? LogicalOperator.AND : rootOperator;
+				// ✅ fields(LogicalOperator.xxx)로 시작할 때 루트 그룹에 반영
+				criteriaStack.push( new CriteriaGroup( op ) );
 
 			}
 
@@ -2653,7 +2630,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			public <R2  > Mono<PageResult<ResultTuple<S, List<R2>>>> executeLookupAndCount(
+			public <R2> Mono<PageResult<ResultTuple<S, List<R2>>>> executeLookupAndCount(
 				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
@@ -3079,7 +3056,7 @@ public class MongoQueryBuilder<K> {
 
 			public Flux<E> execute() {
 
-				queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
+				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
 					Query query = new Query();
 
 					if (criteriaOptional.isPresent()) {
@@ -3364,7 +3341,7 @@ public class MongoQueryBuilder<K> {
 
 			public Mono<E> execute() {
 
-				queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
+				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
 					Query query = new Query();
 
 					if (criteriaOptional.isPresent()) {
@@ -3408,7 +3385,7 @@ public class MongoQueryBuilder<K> {
 
 			public Mono<E> executeFirst() {
 
-				queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
+				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
 					Query query = new Query();
 
 					if (criteriaOptional.isPresent()) {
@@ -3716,7 +3693,7 @@ public class MongoQueryBuilder<K> {
 
 			public Mono<Long> execute() {
 
-				queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
+				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
 					Query query = new Query();
 
 					if (criteriaOptional.isPresent()) {
@@ -3792,7 +3769,7 @@ public class MongoQueryBuilder<K> {
 
 			public Mono<DeleteResult> execute() {
 
-				queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
+				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
 					Query query = new Query();
 
 					if (criteriaOptional.isPresent()) {
@@ -3989,23 +3966,15 @@ public class MongoQueryBuilder<K> {
 						String leftName = simpleName( leftClass );
 						String rightName = simpleName( rightClass );
 
-						return docs
-							.hasElements()
-							.flatMap( existsLeft -> {
+						Mono<Document> firstDocMono = docs.next();
 
-								if (! existsLeft) { return Mono.just( new ResultTuple<>( leftName, false, rightName, false ) ); }
+						return firstDocMono
+							.map( d -> {
+								boolean rightExists = Optional.ofNullable( d.get( "_rightExists", Boolean.class ) ).orElse( false );
+								return new ResultTuple<>( leftName, true, rightName, rightExists );
 
-								// 첫 문서를 읽어 오른쪽 존재 플래그 확인
-								return docs
-									.next()
-									.defaultIfEmpty( new Document() )
-									.map( d -> {
-										boolean rightExists = Optional.ofNullable( d.get( "_rightExists", Boolean.class ) ).orElse( false );
-										return new ResultTuple<>( leftName, true, rightName, rightExists );
-
-									} );
-
-							} );
+							} )
+							.defaultIfEmpty( new ResultTuple<>( leftName, false, rightName, false ) );
 
 					} );
 
@@ -4013,7 +3982,7 @@ public class MongoQueryBuilder<K> {
 
 			public Mono<Boolean> execute() {
 
-				queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
+				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
 					Query query = new Query();
 
 					if (criteriaOptional.isPresent()) {
@@ -4475,8 +4444,18 @@ public class MongoQueryBuilder<K> {
 							Mono<Long> totalCount
 		) {
 
-			this.data = data;
-			this.totalCount = totalCount;
+			this.data = (data == null) ? Flux.empty() : data;
+			this.totalCount = (totalCount == null) ? Mono.just( 0L ) : totalCount;
+
+		}
+
+		/** totalCount를 바로 알고 있을 때 편의 생성자 */
+		public PageStream(
+							Flux<T> data,
+							long totalCount
+		) {
+
+			this( data, Mono.just( totalCount ) );
 
 		}
 
@@ -4492,5 +4471,159 @@ public class MongoQueryBuilder<K> {
 
 		}
 
+		// ----------------------------------------------------------------------
+		// 헬퍼들 (PageResult 와 비슷한 역할, reactive 스타일로)
+		// ----------------------------------------------------------------------
+
+		/** totalCount 기준으로 비어있는지 여부 */
+		public Mono<Boolean> isEmpty() { return totalCount
+			.defaultIfEmpty( 0L )
+			.map( tc -> tc == 0L ); }
+
+		/**
+		 * 현재 페이지(data Flux)가 몇 개를 내보내는지 카운트.
+		 * (PageResult의 size()에 대응, 전체 totalCount가 아니라 "현재 페이지 크기")
+		 */
+		public Mono<Long> size() {
+
+			return data.count();
+
+		}
+
+		/** 각 요소를 다른 타입으로 매핑 (totalCount는 그대로 유지) */
+		public <R> PageStream<R> map(
+			Function<? super T, ? extends R> mapper
+		) {
+
+			Objects.requireNonNull( mapper, "mapper" );
+			return MongoQueryBuilder.this.new PageStream<>( data.map( mapper ), totalCount );
+
+		}
+
+		/** null 결과는 제거하면서 매핑 */
+		public <R> PageStream<R> mapNotNull(
+			Function<? super T, ? extends R> mapper
+		) {
+
+			Objects.requireNonNull( mapper, "mapper" );
+
+			return MongoQueryBuilder.this.new PageStream<>(
+				data
+					.<R>map( mapper )
+					.filter( Objects::nonNull ),
+				totalCount
+			);
+		}
+
+		/** data 스트림을 필터링 (totalCount는 원본 값을 그대로 유지) */
+		public PageStream<T> filter(
+			Predicate<? super T> predicate
+		) {
+
+			Objects.requireNonNull( predicate, "predicate" );
+			return MongoQueryBuilder.this.new PageStream<>(
+				data.filter( predicate::test ),
+				totalCount
+			);
+
+		}
+
+		/** null 요소 제거 (totalCount는 원본 유지) */
+		public PageStream<T> filterNotNull() {
+
+			return MongoQueryBuilder.this.new PageStream<>(
+				data.filter( Objects::nonNull ),
+				totalCount
+			);
+
+		}
+
+		/** 각 요소에 대해 부수효과를 수행하고, 다시 PageStream 으로 돌려줌 (체이닝용) */
+		public PageStream<T> onEach(
+			Consumer<? super T> action
+		) {
+
+			Objects.requireNonNull( action, "action" );
+			return MongoQueryBuilder.this.new PageStream<>(
+				data.doOnNext( action ),
+				totalCount
+			);
+
+		}
+
+		/** 단순 소비용(forEach와 비슷) – subscribe는 호출하는 쪽에서 */
+		public Mono<Void> forEach(
+			Consumer<? super T> action
+		) {
+
+			Objects.requireNonNull( action, "action" );
+			return data
+				.doOnNext( action )
+				.then();
+
+		}
+
+		/** 인덱스를 함께 쓰는 순회 (PageResult.forEachIndexed 대응) */
+		public Mono<Void> forEachIndexed(
+			BiConsumer<Integer, ? super T> action
+		) {
+
+			Objects.requireNonNull( action, "action" );
+			return data
+				.index()
+				.doOnNext( t -> action.accept( t.getT1().intValue(), t.getT2() ) )
+				.then();
+
+		}
+
+		/** totalCount 기준 총 페이지 수 계산 (pageSize > 0) */
+		public Mono<Integer> totalPages(
+			int pageSize
+		) {
+
+			if (pageSize <= 0) { return Mono.error( new IllegalArgumentException( "pageSize must be > 0" ) ); }
+
+			return totalCount
+				.defaultIfEmpty( 0L )
+				.map( tc -> {
+					if (tc == 0L)
+						return 0;
+					return (int) ((tc + pageSize - 1) / pageSize); // ceil
+
+				} );
+
+		}
+
+		/** 다음 페이지 존재 여부. page는 0-based */
+		public Mono<Boolean> hasNext(
+			int page, int pageSize
+		) {
+
+			if (page < 0 || pageSize <= 0) { return Mono.error( new IllegalArgumentException( "invalid page/pageSize" ) ); }
+
+			return totalCount
+				.defaultIfEmpty( 0L )
+				.map( tc -> {
+					long shown = (long) (page + 1) * pageSize;
+					return shown < tc;
+
+				} );
+
+		}
+
+		/**
+		 * 이 PageStream 을 한 번에 List로 모아서 PageResult로 변환.
+		 * (전통적인 PageResult API와 함께 쓰고 싶을 때)
+		 */
+		public Mono<PageResult<T>> collectToPageResult() {
+
+			return Mono
+				.zip(
+					data.collectList(),
+					totalCount.defaultIfEmpty( 0L )
+				)
+				.map( t -> new PageResult<>( t.getT1(), t.getT2() ) );
+
+		}
 	}
 }
