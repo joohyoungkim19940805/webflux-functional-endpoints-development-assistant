@@ -271,7 +271,10 @@ public class EntityFileWatcher extends AbstractWatcher {
 			ctEnum.addComment( javaDoc.clone() );
 
 			List<String> fieldNames = Stream
-				.concat( ctClass.getAllFields().stream(), ctClass.getSuperclass().getAllFields().stream() )
+				.concat(
+					ctClass == null || ctClass.getAllFields() == null ? Stream.empty() : ctClass.getAllFields().stream(),
+					ctClass.getSuperclass() == null || ctClass.getSuperclass().getAllFields() == null ? Stream.empty() : ctClass.getSuperclass().getAllFields().stream()
+				)
 				.map( CtFieldReference::getSimpleName )
 				.distinct()
 				.sorted( Comparator.naturalOrder() )

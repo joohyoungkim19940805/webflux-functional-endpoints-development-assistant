@@ -81,6 +81,24 @@ public final class ProjectDefaults {
 
 	}
 
+	// private static Path detectProjectRoot() {
+	//
+	// Path p = Paths
+	// .get( System.getProperty( "user.dir", "." ) )
+	// .toAbsolutePath()
+	// .normalize();
+	//
+	// for (int i = 0; i < 8 && p != null; i++) {
+	// if (Files.isDirectory( p.resolve( "src" ) ))
+	// return p;
+	// p = p.getParent();
+	//
+	// }
+	//
+	// // 못 찾으면 그냥 실행 경로
+	// return Paths.get( System.getProperty( "user.dir", "." ) ).toAbsolutePath().normalize();
+	// }
+
 	private static Path detectProjectRoot() {
 
 		try {
@@ -104,6 +122,7 @@ public final class ProjectDefaults {
 		}
 
 	}
+
 
 	/** 슬래시 정규화(백슬래시→슬래시) */
 	public static String slash(
