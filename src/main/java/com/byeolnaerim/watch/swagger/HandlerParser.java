@@ -119,8 +119,9 @@ public class HandlerParser {
 			// 여기서는 매칭되는 첫 번째 메서드를 사용
 			if (! candidates.isEmpty()) {
 				CtMethod<?> method = candidates.get( 0 );
-				parseHandlerBody( method.getBody(), handlerInfo, routeName );
-
+				if(method.getBody() != null){
+					parseHandlerBody( method.getBody(), handlerInfo, routeName );
+				}
 			}
 
 		}
