@@ -186,7 +186,7 @@ public class SwaggerGenerator {
 
 		return paramInfo.values().stream().map( info -> {
 			String in = info.getPosition().equals( LayerPosition.REQUEST_PATH ) ? "path" : info.getPosition().equals( LayerPosition.HEADER ) ? "header"
-				: info.getPosition().equals( LayerPosition.HEADER ) ? "cookie" : "query";
+				: info.getPosition().equals( LayerPosition.COOKIE ) ? "cookie" : "query";
 			Map<String, Object> param = new LinkedHashMap<>();
 			param.put( "name", info.getName() );
 			param.put( "in", in );
