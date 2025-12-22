@@ -63,7 +63,9 @@ public class HandlerParser {
 	public HandlerInfo parseHandler(
 		CtExpression<?> handlerExpression, String routeName
 	) {
-
+    	queryParamsVars.clear();
+    	pathsParamsVars.clear();
+    	processedTypes.clear();
 		HandlerInfo handlerInfo = new HandlerInfo();
 
 		// handlerExpression이 람다인지 메서드 참조인지 판별
@@ -473,6 +475,28 @@ public class HandlerParser {
 		// String simpleName = inv.getExecutable().getSimpleName();
 
 		// request.* 호출 분석 (queryParam, pathVariable)
+		
+		// request.queryParams().getFirst("x")
+		if (isRequestQueryParamsGetFirstDirectCall( inv )) {
+			String key = extractStringArgument( inv, 0 );
+			addParamInfo( handlerInfo, key, inv, LayerPosition.REQUEST_STRING );
+
+		}
+
+		// request.queryParams().get("x")
+		if (isRequestQueryParamsGetDirectCall( inv )) {
+			String key = extractStringArgument( inv, 0 );
+			String defaultVal = findOrElseDefaultValue( inv );
+			addParamInfo( handlerInfo, key, defaultVal, inv, LayerPosition.REQUEST_STRING );
+
+		}
+
+		// request.queryParams().getOrDefault("x", ...)
+		if (isRequestQueryParamsGetOrDefaultDirectCall( inv )) {
+			String key = extractStringArgument( inv, 0 );
+			addParamInfo( handlerInfo, key, null, inv, LayerPosition.REQUEST_STRING );
+
+		}
 		// request.queryParam("key") -> query string 파싱
 		// 기존 request.queryParam(...) 처리
 		if (isRequestQueryParamCall( inv )) {
@@ -770,6 +794,66 @@ public class HandlerParser {
 
 	}
 
+	// request.queryParams() 자체인지
+	private boolean isRequestQueryParamsCall(
+		CtInvocation<?> inv
+	) {
+
+		return inv != null && matchesCall( inv, "queryParams" ) && isTargetRequest( inv );
+
+	}
+
+	// request.queryParams().getFirst("x")
+	private boolean isRequestQueryParamsGetFirstDirectCall(
+		CtInvocation<?> inv
+	) {
+
+		if (inv == null)
+			return false;
+		if (! "getFirst".equals( inv.getExecutable().getSimpleName() ))
+			return false;
+		if (inv.getArguments().size() != 1)
+			return false;
+
+		CtExpression<?> target = inv.getTarget();
+		return (target instanceof CtInvocation<?> tInv) && isRequestQueryParamsCall( tInv );
+
+	}
+
+	// request.queryParams().get("x")
+	private boolean isRequestQueryParamsGetDirectCall(
+		CtInvocation<?> inv
+	) {
+
+		if (inv == null)
+			return false;
+		if (! "get".equals( inv.getExecutable().getSimpleName() ))
+			return false;
+		if (inv.getArguments().size() != 1)
+			return false;
+
+		CtExpression<?> target = inv.getTarget();
+		return (target instanceof CtInvocation<?> tInv) && isRequestQueryParamsCall( tInv );
+
+	}
+
+	// request.queryParams().getOrDefault("x", ...)
+	private boolean isRequestQueryParamsGetOrDefaultDirectCall(
+		CtInvocation<?> inv
+	) {
+
+		if (inv == null)
+			return false;
+		if (! "getOrDefault".equals( inv.getExecutable().getSimpleName() ))
+			return false;
+		if (inv.getArguments().size() != 2)
+			return false;
+
+		CtExpression<?> target = inv.getTarget();
+		return (target instanceof CtInvocation<?> tInv) && isRequestQueryParamsCall( tInv );
+
+	}
+	
 	private boolean isQueryParamsGetCall(
 		CtInvocation<?> inv
 	) {
