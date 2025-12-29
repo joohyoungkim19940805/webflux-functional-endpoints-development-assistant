@@ -6,8 +6,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
@@ -24,11 +26,21 @@ import tools.jackson.databind.json.JsonMapper;
 
 public class SwaggerGenerator {
 
+public static String generateSwaggerJson(
+		List<RouteInfo> routeInfos
+	)
+		throws Exception {
+
+		// 기존 호출 유지 (기본: merge)
+		return generateSwaggerJson( routeInfos, false );
+
+	}
+
 	@SuppressWarnings({
 		"unchecked", "rawtypes"
 	})
 	public static String generateSwaggerJson(
-		List<RouteInfo> routeInfos
+		List<RouteInfo> routeInfos, boolean mergeSchemasOnConflict
 	)
 		throws Exception {
 
@@ -67,11 +79,13 @@ public class SwaggerGenerator {
 		// Paths 및 Components 설정
 		Map<String, LinkedHashMap> paths = new LinkedHashMap<>();
 		Map<String, Object> components = new LinkedHashMap<>();
-		Map<String, Object> schemas = new LinkedHashMap<>();
+		// Map<String, Object> schemas = new LinkedHashMap<>();
+		SchemaStore schemaStore = new SchemaStore( mergeSchemasOnConflict );
 		Map<String, Object> parameters = new LinkedHashMap<>();
 		List<Map<String, Object>> tags = new ArrayList<>();
 		List<Map<String, Object>> tagGroups = new ArrayList<>();
 		Map<String, List<String>> groupHierarchy = new LinkedHashMap<>();
+
 		routeInfos.stream().filter( e -> e.getHandlerInfo() != null ).forEach( routeInfo -> {
 
 			String url = routeInfo.getUrl();
@@ -88,14 +102,20 @@ public class SwaggerGenerator {
 
 			// Request Body 설정
 			if (! routeInfo.getHandlerInfo().getRequestBodyInfo().isEmpty()) {
-				methodDetails.put( "requestBody", generateRequestBody( routeInfo.getHandlerInfo().getRequestBodyInfo(), schemas ) );
-
+				// methodDetails.put( "requestBody", generateRequestBody(
+				// routeInfo.getHandlerInfo().getRequestBodyInfo(), schemas ) );
+				methodDetails.put( "requestBody", generateRequestBody( routeInfo.getHandlerInfo().getRequestBodyInfo(), schemaStore, url ) );
 			}
 
 			// Parameters 설정 (Query, Path)
 			List<Map<String, Object>> allParams = new ArrayList<>();
-			allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getQueryStringInfo(), parameters, schemas ) );
-			allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getPathVariableInfo(), parameters, schemas ) );
+			// allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getQueryStringInfo(),
+			// parameters, schemas ) );
+			// allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getPathVariableInfo(),
+			// parameters, schemas ) );
+			allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getQueryStringInfo(), parameters, schemaStore, url ) );
+			allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getPathVariableInfo(), parameters, schemaStore, url ) );
+
 
 			if (! allParams.isEmpty()) {
 				methodDetails.put( "parameters", allParams );
@@ -104,8 +124,9 @@ public class SwaggerGenerator {
 
 			// Response 설정
 			if (! routeInfo.getHandlerInfo().getResponseBodyInfo().isEmpty()) {
-				methodDetails.put( "responses", generateResponses( routeInfo.getHandlerInfo().getResponseBodyInfo(), schemas ) );
-
+				// methodDetails.put( "responses", generateResponses(
+				// routeInfo.getHandlerInfo().getResponseBodyInfo(), schemas ) );
+				methodDetails.put( "responses", generateResponses( routeInfo.getHandlerInfo().getResponseBodyInfo(), schemaStore, url ) );
 			}
 
 			((Map) paths.get( url )).put( httpMethod, methodDetails );
@@ -147,7 +168,8 @@ public class SwaggerGenerator {
 
 		}
 
-		components.put( "schemas", schemas );
+		// components.put( "schemas", schemas );
+		components.put( "schemas", schemaStore.schemas );
 		components.put( "parameters", parameters );
 		swagger.put( "paths", paths );
 		swagger.put( "components", components );
@@ -155,13 +177,14 @@ public class SwaggerGenerator {
 		swagger.put( "x-tagGroups", tagGroups );
 
 		// Swagger JSON 출력
-		JsonMapper objectMapper = JsonMapper.builder().findAndAddModules().build();
+		ObjectMapper objectMapper = new ObjectMapper();
 		return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString( swagger );
 
 	}
 
 	private static Map<String, Object> generateRequestBody(
-		Map<String, HandlerInfo.Info> requestBodyInfo, Map<String, Object> schemas
+		Map<String, HandlerInfo.Info> requestBodyInfo, // Map<String, Object> schemas,
+		SchemaStore schemaStore, String originUrl
 	) {
 
 		Map<String, Object> requestBody = new LinkedHashMap<>();
@@ -170,7 +193,8 @@ public class SwaggerGenerator {
 		Map<String, Object> content = new LinkedHashMap<>();
 		requestBodyInfo.forEach( (className, info) -> {
 			String schemaName = className;
-			schemas.putIfAbsent( schemaName, buildSchema( info, schemas ) );
+			// schemas.putIfAbsent( schemaName, buildSchema( info, schemas ) );
+			schemaStore.putSchema( schemaName, buildSchema( info, schemaStore, originUrl ), originUrl );
 			content.put( "application/json", Map.of( "schema", Map.of( "$ref", "#/components/schemas/" + schemaName ) ) );
 
 		} );
@@ -181,7 +205,9 @@ public class SwaggerGenerator {
 	}
 
 	private static List<Map<String, Object>> generateParameters(
-		Map<String, HandlerInfo.Info> paramInfo, Map<String, Object> parameters, Map<String, Object> schemas
+		Map<String, HandlerInfo.Info> paramInfo, Map<String, Object> parameters,
+		// Map<String, Object> schemas
+		SchemaStore schemaStore, String originUrl
 	) {
 
 		return paramInfo.values().stream().map( info -> {
@@ -191,7 +217,8 @@ public class SwaggerGenerator {
 			param.put( "name", info.getName() );
 			param.put( "in", in );
 			param.put( "required", info.getRequired() );
-			param.put( "schema", mapType( info, schemas ) );
+			// param.put( "schema", mapType( info, schemas ) );
+			param.put( "schema", mapType( info, schemaStore, originUrl ) );
 			param.put( "description", info.getDescription() );
 
 			if (info.getDefaultValue() != null) {
@@ -209,7 +236,9 @@ public class SwaggerGenerator {
 
 	@SuppressWarnings("unchecked")
 	private static Map<String, Object> generateResponses(
-		Map<String, HandlerInfo.Info> responseBodyInfo, Map<String, Object> schemas
+		Map<String, HandlerInfo.Info> responseBodyInfo,
+		// Map<String, Object> schemas
+		SchemaStore schemaStore, String originUrl
 	) {
 
 		Map<String, Object> responses = new LinkedHashMap<>();
@@ -217,13 +246,15 @@ public class SwaggerGenerator {
 
 		responseBodyInfo.forEach( (className, info) -> {
 
-			if (schemas.containsKey( className ) && schemas.get( className ) instanceof Map map) {
-				map.putAll( buildSchema( info, schemas ) );
+			// if (schemas.containsKey( className ) && schemas.get( className ) instanceof Map map) {
+			// map.putAll( buildSchema( info, schemas ) );
+			//
+			// } else {
+			// schemas.putIfAbsent( className, buildSchema( info, schemas ) );
+			//
+			// }
+			schemaStore.putSchema( className, buildSchema( info, schemaStore, originUrl ), originUrl );
 
-			} else {
-				schemas.putIfAbsent( className, buildSchema( info, schemas ) );
-
-			}
 
 			responseContent.put( "application/json", Map.of( "schema", Map.of( "$ref", "#/components/schemas/" + className ) ) );
 
@@ -231,13 +262,14 @@ public class SwaggerGenerator {
 				info.getGenericTypes().forEach( e -> {
 					String key = e.getType().getSimpleName();
 
-					if (schemas.containsKey( key ) && schemas.get( key ) instanceof Map map) {
-						map.putAll( buildSchema( info, schemas ) );
-
-					} else {
-						schemas.putIfAbsent( key, buildSchema( e, schemas ) );
-
-					}
+					// if (schemas.containsKey( key ) && schemas.get( key ) instanceof Map map) {
+					// map.putAll( buildSchema( info, schemas ) );
+					//
+					// } else {
+					// schemas.putIfAbsent( key, buildSchema( e, schemas ) );
+					//
+					// }
+					schemaStore.putSchema( key, buildSchema( e, schemaStore, originUrl ), originUrl );
 
 				} );
 
@@ -261,9 +293,10 @@ public class SwaggerGenerator {
 
 	}
 
-	@SuppressWarnings("unchecked")
 	private static Map<String, Object> buildSchema(
-		HandlerInfo.Info info, Map<String, Object> schemas
+		HandlerInfo.Info info,
+		// Map<String, Object> schemas
+		SchemaStore schemaStore, String originUrl
 	) {
 
 		Map<String, Object> schema = new LinkedHashMap<>();
@@ -273,7 +306,8 @@ public class SwaggerGenerator {
 		info.getFields().forEach( (fieldName, fieldInfo) -> {
 
 			// Map<String, Object> property = new LinkedHashMap<>();
-			Map<String, Object> fieldTypeMap = mapType( fieldInfo, schemas );
+			// Map<String, Object> fieldTypeMap = mapType( fieldInfo, schemas );
+			Map<String, Object> fieldTypeMap = mapType( fieldInfo, schemaStore, originUrl );
 
 			Map<String, Object> property = new LinkedHashMap<>( fieldTypeMap );
 
@@ -316,7 +350,9 @@ public class SwaggerGenerator {
 
 	@SuppressWarnings("unchecked")
 	private static Map<String, Object> mapType(
-		Info info, Map<String, Object> schemas
+		Info info,
+		// Map<String, Object> schemas
+		SchemaStore schemaStore, String originUrl
 	) {
 
 		Class<?> type = info.getType();
@@ -392,14 +428,18 @@ public class SwaggerGenerator {
 				 * }
 				 */
 				if (i == 0) {
-					prevMap = mapType( info.getGenericTypes().get( i ), schemas );
+					// prevMap = mapType( info.getGenericTypes().get( i ), schemas );
+					prevMap = mapType( info.getGenericTypes().get( i ), schemaStore, originUrl );
 					putMap.accept( items, prevMap );
 					continue;
 
 				}
 
+				@SuppressWarnings("unchecked")
 				Map<String, Object> _items = (Map<String, Object>) prevMap.get( "items" );
-				Map<String, Object> nextMap = mapType( info.getGenericTypes().get( i ), schemas );
+				// Map<String, Object> nextMap = mapType( info.getGenericTypes().get( i ), schemas );
+				Map<String, Object> nextMap = mapType( info.getGenericTypes().get( i ), schemaStore, originUrl );
+
 				putMap.accept( _items, nextMap );
 				prevMap = nextMap;
 
@@ -423,14 +463,15 @@ public class SwaggerGenerator {
 			typeStr = "#/components/schemas/" + type.getSimpleName(); // 사용자 정의 클래스는 Schema로 참조
 			// System.out.println( info );
 
-			if (schemas.containsKey( type.getSimpleName() ) && schemas.get( type.getSimpleName() ) instanceof Map map) {
-				map.putAll( buildSchema( info, schemas ) );
-
-			} else {
-				schemas.putIfAbsent( type.getSimpleName(), buildSchema( info, schemas ) );
-
-			}
-
+			// if (schemas.containsKey( type.getSimpleName() ) && schemas.get( type.getSimpleName() ) instanceof
+			// Map map) {
+			// map.putAll( buildSchema( info, schemas ) );
+			//
+			// } else {
+			// schemas.putIfAbsent( type.getSimpleName(), buildSchema( info, schemas ) );
+			//
+			// }
+			schemaStore.putSchema( type.getSimpleName(), buildSchema( info, schemaStore, originUrl ), originUrl );
 		}
 
 		if (type == org.bson.types.ObjectId.class) {
@@ -462,6 +503,143 @@ public class SwaggerGenerator {
 
 	}
 
+
+	private static final class SchemaStore {
+
+		private final boolean mergeOnConflict;
+
+		private final Map<String, Object> schemas = new LinkedHashMap<>();
+
+		private final Map<String, Set<String>> origins = new LinkedHashMap<>();
+
+		private SchemaStore(
+							boolean mergeOnConflict
+		) {
+
+			this.mergeOnConflict = mergeOnConflict;
+
+		}
+
+		@SuppressWarnings("unchecked")
+		void putSchema(
+			String name, Map<String, Object> incoming, String originUrl
+		) {
+
+			Set<String> prevOriginsSnapshot = origins.containsKey( name )
+				? new LinkedHashSet<>( origins.get( name ) )
+				: Set.of();
+
+			origins.computeIfAbsent( name, k -> new LinkedHashSet<>() ).add( originUrl );
+
+			Object existingObj = schemas.get( name );
+
+			if (existingObj == null) {
+				schemas.put( name, incoming );
+				return;
+
+			}
+
+			if (! (existingObj instanceof Map)) {
+				warnSchemaConflict( name, prevOriginsSnapshot, originUrl );
+
+				if (! mergeOnConflict) {
+					schemas.put( name, incoming );
+
+				}
+
+				return;
+
+			}
+
+			Map<String, Object> existing = (Map<String, Object>) existingObj;
+
+			if (existing.equals( incoming )) {
+				return; // 동일 정의면 조용히 통과
+
+			}
+
+			warnSchemaConflict( name, prevOriginsSnapshot, originUrl );
+
+			if (mergeOnConflict) {
+				mergeSchemaMaps( name, existing, incoming, prevOriginsSnapshot, originUrl );
+
+			} else {
+				schemas.put( name, incoming ); // 덮어쓰기
+
+			}
+
+		}
+
+		private void warnSchemaConflict(
+			String schemaName, Set<String> existingOrigins, String newOrigin
+		) {
+
+			System.err.println( "⚠️ [SwaggerGenerator] Schema가 충돌합니다. : '" + schemaName + "'" );
+			System.err.println( "   - 기존 정의 URL: " + (existingOrigins.isEmpty() ? "(unknown)" : existingOrigins) );
+			System.err.println( "   - 새 정의 URL: " + newOrigin );
+			System.err.println( "   - 설정: mergeSchemasOnConflict=" + mergeOnConflict + " (" + (mergeOnConflict ? "merge(병합)" : "overwrite(새 정의로 덮어쓰기)") + ")" );
+
+		}
+
+		@SuppressWarnings("unchecked")
+		private void mergeSchemaMaps(
+			String schemaName, Map<String, Object> target, Map<String, Object> incoming, Set<String> existingOrigins, String newOrigin
+		) {
+
+			// properties만 “간단 merge”: 없는 필드만 추가, 같은 필드인데 내용 다르면 경고
+			Object tPropsObj = target.get( "properties" );
+			Object iPropsObj = incoming.get( "properties" );
+
+			if (tPropsObj instanceof Map tProps && iPropsObj instanceof Map iProps) {
+
+				for (Object k : iProps.keySet()) {
+					String propName = String.valueOf( k );
+					Object tVal = tProps.get( propName );
+					Object iVal = iProps.get( propName );
+
+					if (tVal == null) {
+						tProps.put( propName, iVal );
+						continue;
+
+					}
+
+					if (! Objects.equals( tVal, iVal )) {
+						System.err.println( "[SwaggerGenerator] Property가 충돌합니다. : '" + schemaName + "." + propName + "'" );
+						System.err.println( "   - 기존 정의 URL: " + (existingOrigins.isEmpty() ? "(unknown)" : existingOrigins) );
+						System.err.println( "   - 새 정의 URL: " + newOrigin );
+						System.err.println( "   - merge 모드이므로 기존 값과 새 정의 값을 합칩니다.\n" );
+
+					}
+
+				}
+
+			} else if (tPropsObj == null && iPropsObj instanceof Map) {
+				target.put( "properties", new LinkedHashMap<>( (Map<String, Object>) iPropsObj ) );
+
+			}
+
+			// 나머지 키는 “간단 처리”: 없으면 넣고, 있으면 다르면 경고만 (기존 유지)
+			for (Map.Entry<String, Object> e : incoming.entrySet()) {
+				String key = e.getKey();
+				if ("properties".equals( key ))
+					continue;
+
+				if (! target.containsKey( key )) {
+					target.put( key, e.getValue() );
+
+				} else if (! Objects.equals( target.get( key ), e.getValue() )) {
+					System.err.println( "[SwaggerGenerator] Schema가 충돌합니다. : '" + schemaName + "." + key + "'" );
+					System.err.println( "   - 기존 정의 URL: " + (existingOrigins.isEmpty() ? "(unknown)" : existingOrigins) );
+					System.err.println( "   - 새 정의 URL: " + newOrigin );
+					System.err.println( "   - merge 모드이므로 기존 값과 새 정의 값을 합칩니다.\n" );
+
+				}
+
+			}
+
+		}
+
+	}
 	public static void main(
 		String[] args
 	)
