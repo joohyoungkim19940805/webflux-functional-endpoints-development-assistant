@@ -571,8 +571,13 @@ public class HandlerParser {
 			int targetIndex = isBodyToXCall ? 0 : 1;
 			CtExpression<?> arg = inv.getArguments().get( targetIndex );
 			Class<?> bodyClass = extractClassArgument( inv, targetIndex );
+			CtTypeReference<?> bodyClassRef = extractTypeRefArgument( inv, targetIndex );
+			
+			HandlerInfo.Info requestBodyInfo = new HandlerInfo.Info();
 
-			HandlerInfo.Info requestBodyInfo = createParamInfoFromClass( bodyClass );
+			requestBodyInfo.setType( bodyClass );
+			requestBodyInfo.setTypeRef( bodyClassRef );
+
 			parseClassFields( arg.getFactory().Type().createReference( bodyClass ), requestBodyInfo );
 
 			if (! arg.getReferencedTypes().isEmpty()) {
@@ -758,6 +763,7 @@ public class HandlerParser {
 		// 기본 타입 설정
 		Class<?> rawType = loadClassFromTypeReference( typeRef );
 		pInfo.setType( rawType );
+		pInfo.setTypeRef( typeRef );
 
 		// 제너릭 타입 파라미터 처리
 		List<CtTypeReference<?>> actualTypeArgs = typeRef.getActualTypeArguments();
@@ -1140,6 +1146,21 @@ public class HandlerParser {
 
 	}
 
+	private CtTypeReference<?> extractTypeRefArgument(
+		CtInvocation<?> inv, int index
+	) {
+
+		if (inv.getArguments().size() <= index)
+			return null;
+
+		CtExpression<?> arg = inv.getArguments().get( index );
+
+		if (arg instanceof CtFieldAccess<?> fa && "class".equals( fa.getVariable().getSimpleName() ) && fa.getTarget() instanceof CtTypeAccess<?> ta) { return ta.getAccessedType(); }
+
+		return null;
+
+	}
+	
 	private void parseResponseBodyFromOkChain(
 		CtInvocation<?> inv, HandlerInfo handlerInfo
 	) {
@@ -1248,18 +1269,14 @@ public class HandlerParser {
 			} else {
 				// ResponseWrapper가 아니면 그냥 타입 그대로 사용
 				// 두 번째 인자 (Class<?> elementClass) 있으면 사용
-				Class<?> finalType = Object.class;
+				Class<?> finalType = inv.getArguments().size() > 1 ? extractClassArgument( inv, 1 ) : pInfo.getType();
+				CtTypeReference<?> finalTypeRef = (inv.getArguments().size() > 1) ? extractTypeRefArgument( inv, 1 ) : firstArgTypeRef;
 
-				if (inv.getArguments().size() > 1) {
-					finalType = extractClassArgument( inv, 1 );
 
-				} else {
-					finalType = pInfo.getType();
+				HandlerInfo.Info finalInfo = new HandlerInfo.Info();
 
-				}
-
-				HandlerInfo.Info finalInfo = createParamInfoFromClass( finalType );
-
+				finalInfo.setType( finalType );
+				finalInfo.setTypeRef( finalTypeRef );
 				if (isReactorType( pInfo.getType() ) && ! isJdkContainerType( finalType ) && ! isReactorType( finalType ) && finalType != null && finalType.getTypeParameters().length > 0 // 제너릭 클래스인가?
 				) {
 
@@ -1303,6 +1320,15 @@ public class HandlerParser {
 
 					}
 
+				} else {
+
+					if (finalTypeRef != null) {
+						parseClassFields( finalTypeRef, finalInfo );
+
+					} else if (finalType != null && finalType != Object.class) {
+						parseClassFields( inv.getFactory().Type().createReference( finalType ), finalInfo );
+
+					}
 				}
 
 				// handlerInfo
@@ -1341,7 +1367,19 @@ public class HandlerParser {
 				HandlerInfo.Info pInfo = buildParamInfoFromTypeRef( valTypeRef );
 
 				handlerInfo.getResponseBodyInfo().put( pInfo.getType().getSimpleName(), pInfo );
+				
+				if (valTypeRef != null) {
+					parseClassFields( valTypeRef, pInfo );
+				}
 
+				handlerInfo
+					.getResponseBodyInfo()
+					.put(
+						(pInfo.getType() != null && pInfo.getType() != Object.class)
+							? pInfo.getType().getSimpleName()
+							: (valTypeRef != null ? valTypeRef.getSimpleName() : "Object"),
+						pInfo
+					);
 			}
 
 		} else if (name.equals( "contentType" )) {
@@ -1564,6 +1602,7 @@ public class HandlerParser {
 		HandlerInfo.Info info = new HandlerInfo.Info();
 		info.setName( field.getSimpleName() );
 		info.setType( loadClassFromTypeReference( fieldType ) );
+		info.setTypeRef( fieldType );
 		// 필요 시 필드 타입으로 설정, 혹은 Object.class 등
 		// 아래처럼 확장 정보도 일부 넣어줄 수 있음
 		info.setPosition( LayerPosition.FIELDS );
@@ -1642,16 +1681,6 @@ public class HandlerParser {
 		}
 
 		return loadClassFromTypeReference( typeRef );
-
-	}
-
-	private HandlerInfo.Info createParamInfoFromClass(
-		Class<?> cls
-	) {
-
-		HandlerInfo.Info p = new HandlerInfo.Info();
-		p.setType( cls );
-		return p;
 
 	}
 
