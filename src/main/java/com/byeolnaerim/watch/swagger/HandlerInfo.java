@@ -5,7 +5,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
+import spoon.reflect.reference.CtTypeReference;
 
 public class HandlerInfo {
 
@@ -91,6 +91,8 @@ public class HandlerInfo {
 
 		private Class<?> type;
 
+		private CtTypeReference<?> typeRef;
+		
 		private List<Info> genericTypes = new ArrayList<>();
 
 		private Map<String, Info> fields = new HashMap<>();
@@ -141,6 +143,13 @@ public class HandlerInfo {
 			Class<?> type
 		) { this.type = type; }
 
+		public CtTypeReference<?> getTypeRef() { return typeRef; }
+
+		public void setTypeRef(
+			CtTypeReference<?> typeRef
+		) { this.typeRef = typeRef; }
+
+		
 		public List<Info> getGenericTypes() { return genericTypes; }
 
 		public void setGenericTypes(
