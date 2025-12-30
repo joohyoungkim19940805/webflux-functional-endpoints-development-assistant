@@ -287,8 +287,9 @@ public class SwaggerGenerator {
 	) {
 
 		Map<String, Object> schema = new LinkedHashMap<>();
+		Map<String, Object> properties = new LinkedHashMap<>();
 		schema.put( "type", "object" );
-		schema.put( "properties", new LinkedHashMap<>() );
+		schema.put( "properties", properties );
 		schema.put( "additionalProperties", false );
 		info.getFields().forEach( (fieldName, fieldInfo) -> {
 
@@ -315,8 +316,7 @@ public class SwaggerGenerator {
 
 			}
 
-			((Map<String, Object>) schema.get( "properties" )).put( fieldName, property );
-
+			properties.put( fieldName, property );
 
 		} );
 
