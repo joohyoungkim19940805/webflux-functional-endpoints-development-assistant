@@ -2585,11 +2585,6 @@ public class MongoQueryBuilder<K> {
 			}
 
 			// 원자적 update 빌더
-		    public AtomicUpdateQueryBuilder 원자적update() {
-		        return new AtomicUpdateQueryBuilder();
-		    }
-		
-		    // 영문 alias도 같이 두고 싶으면
 		    public AtomicUpdateQueryBuilder atomicUpdate() {
 		        return new AtomicUpdateQueryBuilder();
 		    }
