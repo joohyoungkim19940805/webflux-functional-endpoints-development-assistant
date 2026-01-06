@@ -960,6 +960,167 @@ public class MongoQueryBuilder<K> {
 				} );
 
 		}
+
+		private String resolveRemoveCollectionName(
+			Class<?> clazz
+		) {
+
+			var doc = clazz
+				.getDeclaredAnnotation(
+					org.springframework.data.mongodb.core.mapping.Document.class
+				);
+
+			if (doc == null || doc.collection() == null || doc.collection().isBlank()) { return clazz.getSimpleName() + "_remove"; }
+
+			return doc.collection() + "_remove";
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Iterable<E> entities
+		) {
+
+			return deleteBulk( Flux.fromIterable( entities ), false );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Iterable<E> entities, boolean isBackup
+		) {
+
+			return deleteBulk( Flux.fromIterable( entities ), isBackup );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Collection<E> entities
+		) {
+
+			return deleteBulk( Flux.fromIterable( entities ), false );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Collection<E> entities, boolean isBackup
+		) {
+
+			return deleteBulk( Flux.fromIterable( entities ), isBackup );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Flux<E> entityFlux
+		) {
+
+			return deleteBulk( entityFlux, false );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Flux<E> entityFlux, boolean isBackup
+		) {
+
+			if (! isBackup) { return deleteBulkInternal( entityFlux ); }
+
+			// backup이 필요한 경우엔 엔티티를 재사용해야 하므로 list로 한번 모음
+			return entityFlux
+				.collectList()
+				.flatMap( list -> {
+
+					if (list.isEmpty())
+						return Mono.empty();
+
+					Class<?> entityClass = list.get( 0 ).getClass();
+					String backupCollectionName = resolveRemoveCollectionName( entityClass );
+
+					// 백업 먼저 적재 -> 그 다음 bulk delete
+					return reactiveMongoTemplate
+						.insert( list, backupCollectionName )
+						.then( deleteBulkInternal( Flux.fromIterable( list ) ) );
+
+				} );
+
+		}
+
+		/**
+		 * 실제 bulk delete 수행(backup 없이).
+		 * saveAllBulkUpsert(Flux)와 동일한 lazy-init 패턴을 사용합니다.
+		 */
+		private Mono<BulkWriteResult> deleteBulkInternal(
+			Flux<E> entityFlux
+		) {
+
+			AtomicReference<ReactiveBulkOperations> bulkRef = new AtomicReference<>();
+			AtomicReference<Field> idFieldRef = new AtomicReference<>();
+			AtomicBoolean hasValue = new AtomicBoolean( false );
+
+			return entityFlux
+				.flatMap( entity -> {
+
+					hasValue.set( true );
+
+					ReactiveBulkOperations bulkOps = bulkRef.get();
+					Field idField = idFieldRef.get();
+
+					// 첫 요소에서 lazy init
+					if (bulkOps == null) {
+						Class<?> entityClass = entity.getClass();
+
+						Field f = findIdField( entityClass );
+						f.setAccessible( true );
+
+						ReactiveBulkOperations newBulk = reactiveMongoTemplate
+							.bulkOps( BulkOperations.BulkMode.UNORDERED, entityClass );
+
+						bulkRef.set( newBulk );
+						idFieldRef.set( f );
+
+						bulkOps = newBulk;
+						idField = f;
+
+					}
+
+					try {
+						Object id = idField.get( entity );
+
+						// id 없으면 삭제 대상에서 제외
+						if (id == null)
+							return Mono.empty();
+
+						Query q = Query.query( Criteria.where( "_id" ).is( id ) );
+						bulkOps.remove( q );
+
+						return Mono.empty();
+
+					} catch (IllegalAccessException e) {
+						return Mono.error( new RuntimeException( "Failed to access @Id field via reflection", e ) );
+
+					}
+
+				} )
+				.then(
+					Mono.defer( () -> {
+
+						if (! hasValue.get())
+							return Mono.empty();
+
+						ReactiveBulkOperations bulkOps = bulkRef.get();
+						if (bulkOps == null)
+							return Mono.empty();
+
+						return bulkOps.execute();
+
+					} )
+				)
+				.doFinally( signalType -> {
+					Field idField = idFieldRef.get();
+					if (idField != null)
+						idField.setAccessible( false );
+
+				} );
+
+		}
+		
 		public Mono<DeleteResult> delete(
 			E e
 		) {
@@ -1911,7 +2072,35 @@ public class MongoQueryBuilder<K> {
 					return this;
 
 				}
+				
+				/** 
+				 * 왼쪽 필드(String ObjectId hex)를 ObjectId로 변환해서 오른쪽 필드(ObjectId)와 비교하도록 바인딩
+				 * - 예: left.auctionId(String) == right._id(ObjectId)
+				 * - $convert 사용: 변환 실패 시 null로 처리되어 쿼리 에러 없이 매칭 0건 처리됨
+				 */
+				public Builder bindConditionFieldsLeftToObjectId(
+					String leftFieldPath, Condition cond, String rightFieldPath
+				) {
 
+					String var = nextVar();
+
+					// $$var = {$convert: {input:"$auctionId", to:"objectId", onError:null, onNull:null}}
+					Document toObjectIdExpr = new Document(
+						"$convert",
+						new Document( "input", "$" + leftFieldPath )
+							.append( "to", "objectId" )
+							.append( "onError", null )
+							.append( "onNull", null )
+					);
+
+					letDoc.put( var, toObjectIdExpr );
+
+					// 기존 addConditionExpr 로직 재사용: $eq: ["$_id", "$$v0"] 형태로 들어감
+					addConditionExpr( cond, "$$" + var, rightFieldPath, null, null, null );
+					return this;
+
+				}
+				
 				/** between(low, high) 상수 범위 */
 				public Builder bindConditionBetween(
 					Object lowInclusive, Object highInclusive, String rightFieldPath
