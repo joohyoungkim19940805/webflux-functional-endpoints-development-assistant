@@ -54,6 +54,7 @@ import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.LookupSpec
 import com.mongodb.ReadPreference;
 import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.result.DeleteResult;
+import com.mongodb.client.result.UpdateResult;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import tools.jackson.databind.ObjectMapper;
@@ -2583,6 +2584,15 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+			// 원자적 update 빌더
+		    public AtomicUpdateQueryBuilder 원자적update() {
+		        return new AtomicUpdateQueryBuilder();
+		    }
+		
+		    // 영문 alias도 같이 두고 싶으면
+		    public AtomicUpdateQueryBuilder atomicUpdate() {
+		        return new AtomicUpdateQueryBuilder();
+		    }
 		}
 
 		public class FindAllQueryBuilder<S extends E> extends QueryBuilderAccesser {
@@ -4200,6 +4210,123 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+		}
+
+		public class AtomicUpdateQueryBuilder {
+		
+		    private final Update update = new Update();
+		
+		    // 기본은 안전하게 updateFirst(= 1건)로
+		    private boolean multi = false;
+		    private boolean upsert = false;
+		
+		    /** 여러 건 업데이트로 변경 (updateMulti) */
+		    public AtomicUpdateQueryBuilder multi() {
+		        this.multi = true;
+		        return this;
+		    }
+		
+		    /** 단건 업데이트로 변경 (updateFirst) */
+		    public AtomicUpdateQueryBuilder first() {
+		        this.multi = false;
+		        return this;
+		    }
+		
+		    /** upsert로 실행 */
+		    public AtomicUpdateQueryBuilder upsert() {
+		        this.upsert = true;
+		        return this;
+		    }
+		
+		    // --------------------
+		    // update operators
+		    // --------------------
+		
+		    private String requireField(String field) {
+		        if (field == null || field.isBlank()) {
+		            throw new IllegalArgumentException("field must not be null/blank");
+		        }
+		        return field;
+		    }
+		
+		    public AtomicUpdateQueryBuilder inc(String field, Number delta) {
+		        update.inc(requireField(field), delta);
+		        return this;
+		    }
+		
+		    public AtomicUpdateQueryBuilder inc(Enum<?> field, Number delta) {
+		        return inc(field.name(), delta);
+		    }
+		
+		    public AtomicUpdateQueryBuilder set(String field, Object value) {
+		        update.set(requireField(field), value);
+		        return this;
+		    }
+		
+		    public AtomicUpdateQueryBuilder set(Enum<?> field, Object value) {
+		        return set(field.name(), value);
+		    }
+		
+		    public AtomicUpdateQueryBuilder unset(String field) {
+		        update.unset(requireField(field));
+		        return this;
+		    }
+		
+		    public AtomicUpdateQueryBuilder unset(Enum<?> field) {
+		        return unset(field.name());
+		    }
+		
+		    public AtomicUpdateQueryBuilder push(String field, Object value) {
+		        update.push(requireField(field), value);
+		        return this;
+		    }
+		
+		    public AtomicUpdateQueryBuilder addToSet(String field, Object value) {
+		        update.addToSet(requireField(field), value);
+		        return this;
+		    }
+		
+		    public AtomicUpdateQueryBuilder pull(String field, Object value) {
+		        update.pull(requireField(field), value);
+		        return this;
+		    }
+		
+		    /** 실제 실행 */
+		    public Mono<UpdateResult> execute() {
+		
+		        // update 연산이 하나도 없으면 실수 방지
+		        if (update.getUpdateObject() == null || update.getUpdateObject().isEmpty()) {
+		            return Mono.error(new IllegalStateException("No update operation specified (e.g. inc/set/unset)."));
+		        }
+		
+		        queryMono = fieldBuilder.buildCriteria().map(criteriaOptional -> {
+		            Query query = new Query();
+		            criteriaOptional.ifPresent(query::addCriteria);
+		            return query;
+		        });
+		
+		        return Mono.zip(executeClassMono, queryMono)
+		            .flatMap(tuple -> {
+		                Class<E> entityClass = tuple.getT1();
+		                Query query = tuple.getT2();
+		
+		                // collectionName 지정 여부에 따라 분기
+		                if (collectionName != null && !collectionName.isBlank()) {
+		                    if (upsert) return reactiveMongoTemplate.upsert(query, update, entityClass, collectionName);
+		                    if (multi)  return reactiveMongoTemplate.updateMulti(query, update, entityClass, collectionName);
+		                    return reactiveMongoTemplate.updateFirst(query, update, entityClass, collectionName);
+		                }
+		
+		                if (upsert) return reactiveMongoTemplate.upsert(query, update, entityClass);
+		                if (multi)  return reactiveMongoTemplate.updateMulti(query, update, entityClass);
+		                return reactiveMongoTemplate.updateFirst(query, update, entityClass);
+		            });
+		    }
+		
+		    /** 자주 쓰면 편의 메서드 */
+		    public Mono<Long> executeModifiedCount() {
+		        return execute().map(UpdateResult::getModifiedCount);
+		    }
 		}
 
 	}
