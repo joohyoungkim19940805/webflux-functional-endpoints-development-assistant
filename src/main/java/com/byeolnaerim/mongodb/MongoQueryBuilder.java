@@ -962,6 +962,267 @@ public class MongoQueryBuilder<K> {
 
 		}
 
+		public Mono<BulkWriteResult> saveAllBulkUpsertByKey(
+			Flux<E> entityFlux, String... keyFieldName // 예: "caseKey" 또는 "court","year","caseNo"
+		) {
+
+			if (entityFlux == null)
+				return Mono.error( new IllegalArgumentException( "entityFlux must not be null" ) );
+			if (keyFieldName == null || keyFieldName.length == 0)
+				return Mono.error( new IllegalArgumentException( "keyFieldName must not be null/empty" ) );
+
+			// blank 방지 + 정규화
+			final String[] keys = Arrays
+				.stream( keyFieldName )
+				.filter( Objects::nonNull )
+				.map( String::trim )
+				.filter( s -> ! s.isBlank() )
+				.toArray( String[]::new );
+
+			if (keys.length == 0)
+				return Mono.error( new IllegalArgumentException( "keyFieldName must contain at least 1 non-blank field" ) );
+
+			AtomicReference<ReactiveBulkOperations> bulkRef = new AtomicReference<>();
+			AtomicReference<Field[]> keyFieldsRef = new AtomicReference<>();
+			AtomicBoolean hasValue = new AtomicBoolean( false );
+
+			return entityFlux
+				// bulkOps에 작업 쌓기는 side-effect -> 순차로 안전하게
+				.concatMap( entity -> {
+					hasValue.set( true );
+
+					ReactiveBulkOperations bulkOps = bulkRef.get();
+					Field[] keyFields = keyFieldsRef.get();
+
+					// 첫 요소에서 lazy init
+					if (bulkOps == null) {
+						Class<?> entityClass = entity.getClass();
+
+						Field[] fs = new Field[keys.length];
+
+						try {
+
+							for (int i = 0; i < keys.length; i++) {
+								Field f = entityClass.getDeclaredField( keys[i] );
+								f.setAccessible( true );
+								fs[i] = f;
+
+							}
+
+						} catch (NoSuchFieldException e) {
+							return Mono
+								.error(
+									new IllegalArgumentException(
+										"No field in " + entityClass.getName() + ": " + e.getMessage(),
+										e
+									)
+								);
+
+						}
+
+						ReactiveBulkOperations newBulk = reactiveMongoTemplate.bulkOps( BulkOperations.BulkMode.UNORDERED, entityClass );
+
+						bulkRef.set( newBulk );
+						keyFieldsRef.set( fs );
+
+						bulkOps = newBulk;
+						keyFields = fs;
+
+					}
+
+					try {
+						// keyDoc 구성 + null 체크
+						Document keyDoc = new Document();
+
+						for (int i = 0; i < keys.length; i++) {
+							Object v = keyFields[i].get( entity );
+
+							if (v == null) {
+								// 정책: 키 하나라도 없으면 upsert 불가 -> insert(또는 skip/에러로 바꿔도 됨)
+								bulkOps.insert( entity );
+								return Mono.empty();
+
+							}
+
+							keyDoc.append( keys[i], v );
+
+						}
+
+						// Query: 단일키면 where, 복합키면 andOperator
+						Query query;
+
+						if (keys.length == 1) {
+							query = Query.query( Criteria.where( keys[0] ).is( keyDoc.get( keys[0] ) ) );
+
+						} else {
+							Criteria[] cs = new Criteria[keys.length];
+
+							for (int i = 0; i < keys.length; i++) {
+								cs[i] = Criteria.where( keys[i] ).is( keyDoc.get( keys[i] ) );
+
+							}
+
+							query = Query.query( new Criteria().andOperator( cs ) );
+
+						}
+
+						// Update: 엔티티 -> doc 변환 후 _id 제거
+						Document doc = new Document();
+						reactiveMongoTemplate.getConverter().write( entity, doc );
+						doc.remove( "_id" );
+
+						Document updateDoc = new Document()
+							.append( "$set", new Document( doc ) )
+							.append( "$setOnInsert", new Document( keyDoc ) ); // 키 필드들 고정
+
+						bulkOps.upsert( query, new BasicUpdate( updateDoc ) );
+						return Mono.empty();
+
+					} catch (IllegalAccessException e) {
+						return Mono.error( new RuntimeException( "Failed to access key field(s)", e ) );
+
+					}
+
+				} )
+				.then( Mono.defer( () -> {
+					if (! hasValue.get())
+						return Mono.empty();
+					ReactiveBulkOperations bulkOps = bulkRef.get();
+					if (bulkOps == null)
+						return Mono.empty();
+					return bulkOps.execute();
+
+				} ) )
+				.doFinally( st -> {
+					Field[] fs = keyFieldsRef.get();
+
+					if (fs != null) {
+
+						for (Field f : fs) {
+							if (f != null)
+								f.setAccessible( false );
+
+						}
+
+					}
+
+				} );
+		}
+
+
+		public Mono<BulkWriteResult> saveAllBulkUpsertByKey(
+			Collection<E> entities, String... keyFieldName // 예: "caseKey" 또는 "court", "year", "caseNo"
+		) {
+
+			if (entities == null || entities.isEmpty())
+				return Mono.empty();
+			if (keyFieldName == null || keyFieldName.length == 0)
+				return Mono.error( new IllegalArgumentException( "keyFieldName must not be null/empty" ) );
+
+			// blank 방지
+			String[] keys = Arrays
+				.stream( keyFieldName )
+				.filter( Objects::nonNull )
+				.map( String::trim )
+				.filter( s -> ! s.isBlank() )
+				.toArray( String[]::new );
+
+			if (keys.length == 0)
+				return Mono.error( new IllegalArgumentException( "keyFieldName must contain at least 1 non-blank field" ) );
+
+			Class<?> entityClass = entities.iterator().next().getClass();
+
+			// key Field들 준비
+			final Field[] keyFields = new Field[keys.length];
+
+			try {
+
+				for (int i = 0; i < keys.length; i++) {
+					Field f = entityClass.getDeclaredField( keys[i] );
+					f.setAccessible( true );
+					keyFields[i] = f;
+
+				}
+
+			} catch (NoSuchFieldException e) {
+				// 어떤 키에서 터졌는지 메시지 보강
+				return Mono.error( new IllegalArgumentException( "No field in " + entityClass.getName() + ": " + e.getMessage(), e ) );
+
+			}
+
+			ReactiveBulkOperations bulkOps = reactiveMongoTemplate.bulkOps( BulkOperations.BulkMode.UNORDERED, entityClass );
+
+			try {
+
+				for (E entity : entities) {
+
+					// 1) key 값 수집 + null 체크
+					Document keyDoc = new Document(); // {k1:v1, k2:v2...} (setOnInsert에도 재사용)
+					boolean missingKey = false;
+
+					for (int i = 0; i < keys.length; i++) {
+						Object v = keyFields[i].get( entity );
+
+						if (v == null) {
+							missingKey = true;
+							break;
+
+						}
+
+						keyDoc.append( keys[i], v );
+
+					}
+
+					if (missingKey) {
+						// 정책: 키가 하나라도 없으면 upsert 기준이 없으니 insert(또는 skip/에러) 중 택1
+						bulkOps.insert( entity );
+						continue;
+
+					}
+
+					// 2) Query: AND 조건으로 결합 (복합키)
+					Criteria[] cs = new Criteria[keys.length];
+
+					for (int i = 0; i < keys.length; i++) {
+						cs[i] = Criteria.where( keys[i] ).is( keyDoc.get( keys[i] ) );
+
+					}
+
+					Query query = Query.query( new Criteria().andOperator( cs ) );
+
+					// 3) Update document 생성
+					Document doc = new Document();
+					reactiveMongoTemplate.getConverter().write( entity, doc );
+					doc.remove( "_id" ); // _id는 기본 생성 유지
+					for (String k : keys) {
+						doc.remove(k);
+					}
+
+					// 업데이트는 $set, 키는 불변 가정이면 $setOnInsert로만
+					Document updateDoc = new Document()
+						.append( "$set", new Document( doc ) )
+						.append( "$setOnInsert", new Document( keyDoc ) ); // key들 전부 넣기
+
+					bulkOps.upsert( query, new BasicUpdate( updateDoc ) );
+
+				}
+
+			} catch (IllegalAccessException e) {
+				return Mono.error( new RuntimeException( "Failed to access key field(s)", e ) );
+
+			} finally {
+
+				for (Field f : keyFields) {
+					if (f != null)
+						f.setAccessible( false );
+
+				}
+
+			}
+
+			return bulkOps.execute();
+
+		}
 		private String resolveRemoveCollectionName(
 			Class<?> clazz
 		) {
@@ -4294,7 +4555,7 @@ public class MongoQueryBuilder<K> {
 		            return Mono.error(new IllegalStateException("No update operation specified (e.g. inc/set/unset)."));
 		        }
 		
-		        queryMono = fieldBuilder.buildCriteria().map(criteriaOptional -> {
+		        var queryMono = fieldBuilder.buildCriteria().map(criteriaOptional -> {
 		            Query query = new Query();
 		            criteriaOptional.ifPresent(query::addCriteria);
 		            return query;
