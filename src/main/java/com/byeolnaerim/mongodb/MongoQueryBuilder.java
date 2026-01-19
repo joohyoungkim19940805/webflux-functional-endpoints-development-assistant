@@ -4523,6 +4523,15 @@ public class MongoQueryBuilder<K> {
 		        return set(field.name(), value);
 		    }
 		
+			public AtomicUpdateQueryBuilder setOnInsert(String field, Object value) {
+			    update.setOnInsert(requireField(field), value);
+			    return this;
+			}
+
+			public AtomicUpdateQueryBuilder setOnInsert(Enum<?> field, Object value) {
+			    return setOnInsert(field.name(), value);
+			}
+			
 		    public AtomicUpdateQueryBuilder unset(String field) {
 		        update.unset(requireField(field));
 		        return this;
