@@ -133,6 +133,74 @@ public class FieldsPair<K, V> implements Map.Entry<K, V> {
 
 	}
 
+	
+	/**
+	 * range 리스트([from, to])를 받아 between/gte/lte를 자동으로 선택.
+	 * - 둘 다 있으면 between
+	 * - from만 있으면 gte
+	 * - to만 있으면 lte
+	 * - 둘 다 없으면 null
+	 * ※ List<Instant>, List<LocalDate> 등은 제네릭 타입만 달라 오버로드가 불가능하므로
+	 * List<? extends T> 하나로 공통 처리한다.
+	 */
+	public static <K, T> FieldsPair<K, Object> autoRangePair(
+		K field, List<? extends T> range
+	) {
+
+		if (range == null || range.isEmpty())
+			return null;
+
+		T from = range.size() >= 1 ? range.get( 0 ) : null;
+		T to = range.size() >= 2 ? range.get( 1 ) : null;
+
+		return buildAutoRangePair( field, from, to );
+
+	}
+
+	/** Instant 전용 오버로드 */
+	public static <K> FieldsPair<K, Object> autoRangePair(
+		K field, Instant from, Instant to
+	) {
+
+		return buildAutoRangePair( field, from, to );
+
+	}
+
+	/** LocalDateTime 전용 오버로드 */
+	public static <K> FieldsPair<K, Object> autoRangePair(
+		K field, LocalDateTime from, LocalDateTime to
+	) {
+
+		return buildAutoRangePair( field, from, to );
+
+	}
+
+	/** LocalDate 전용 오버로드 */
+	public static <K> FieldsPair<K, Object> autoRangePair(
+		K field, LocalDate from, LocalDate to
+	) {
+
+		return buildAutoRangePair( field, from, to );
+
+	}
+
+	/**
+	 * 내부 공통 로직 (오버로드/리스트 모두 여기로 수렴)
+	 */
+	private static <K, T> FieldsPair<K, Object> buildAutoRangePair(
+		K field, T from, T to
+	) {
+
+		if (from != null && to != null)
+			return pair( field, List.of( from, to ), Condition.between );
+		if (from != null)
+			return pair( field, from, Condition.gte );
+		if (to != null)
+			return pair( field, to, Condition.lte );
+		return null;
+
+	}
+	
 	public static void main(
 		String a[]
 	)
