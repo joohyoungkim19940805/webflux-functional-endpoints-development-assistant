@@ -1,4 +1,4 @@
-package com.byeolnaerim.watch.swagger;
+package com.byeolnaerim.watch.document.swagger.functional;
 
 
 import java.io.File;
@@ -11,9 +11,10 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.http.MediaType;
 import com.byeolnaerim.watch.RouteUtil;
-import com.byeolnaerim.watch.swagger.HandlerInfo.LayerPosition;
-import com.byeolnaerim.watch.swagger.anntation.RequestParam;
-import com.byeolnaerim.watch.swagger.anntation.RequestPath;
+import com.byeolnaerim.watch.document.anntation.SelectedRequestParam;
+import com.byeolnaerim.watch.document.anntation.SelectedRequestPath;
+import com.byeolnaerim.watch.document.anntation.SelectedResponseBody;
+import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo.LayerPosition;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import spoon.Launcher;
@@ -30,12 +31,14 @@ import spoon.reflect.code.CtLocalVariable;
 import spoon.reflect.code.CtReturn;
 import spoon.reflect.code.CtStatement;
 import spoon.reflect.code.CtTypeAccess;
+import spoon.reflect.code.CtVariableRead;
 import spoon.reflect.code.CtVariableWrite;
 import spoon.reflect.declaration.CtAnnotation;
 import spoon.reflect.declaration.CtElement;
 import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.declaration.CtType;
 import spoon.reflect.declaration.CtVariable;
+import spoon.reflect.factory.Factory;
 import spoon.reflect.reference.CtExecutableReference;
 import spoon.reflect.reference.CtFieldReference;
 import spoon.reflect.reference.CtTypeReference;
@@ -60,12 +63,15 @@ public class HandlerParser {
 
 	private Set<String> processedTypes = new HashSet<>();
 
+	private boolean hasResponseBodyAnnotationOverride = false;
+
 	public HandlerInfo parseHandler(
 		CtExpression<?> handlerExpression, String routeName
 	) {
-    	queryParamsVars.clear();
-    	pathsParamsVars.clear();
-    	processedTypes.clear();
+
+		queryParamsVars.clear();
+		pathsParamsVars.clear();
+		processedTypes.clear();
 		HandlerInfo handlerInfo = new HandlerInfo();
 
 		// handlerExpression이 람다인지 메서드 참조인지 판별
@@ -121,9 +127,12 @@ public class HandlerParser {
 			// 여기서는 매칭되는 첫 번째 메서드를 사용
 			if (! candidates.isEmpty()) {
 				CtMethod<?> method = candidates.get( 0 );
-				if(method.getBody() != null){
+
+				if (method.getBody() != null) {
 					parseHandlerBody( method.getBody(), handlerInfo, routeName );
+
 				}
+
 			}
 
 		}
@@ -475,7 +484,7 @@ public class HandlerParser {
 		// String simpleName = inv.getExecutable().getSimpleName();
 
 		// request.* 호출 분석 (queryParam, pathVariable)
-		
+
 		// request.queryParams().getFirst("x")
 		if (isRequestQueryParamsGetFirstDirectCall( inv )) {
 			String key = extractStringArgument( inv, 0 );
@@ -497,6 +506,7 @@ public class HandlerParser {
 			addParamInfo( handlerInfo, key, null, inv, LayerPosition.REQUEST_STRING );
 
 		}
+
 		// request.queryParam("key") -> query string 파싱
 		// 기존 request.queryParam(...) 처리
 		if (isRequestQueryParamCall( inv )) {
@@ -572,7 +582,7 @@ public class HandlerParser {
 			CtExpression<?> arg = inv.getArguments().get( targetIndex );
 			Class<?> bodyClass = extractClassArgument( inv, targetIndex );
 			CtTypeReference<?> bodyClassRef = extractTypeRefArgument( inv, targetIndex );
-			
+
 			HandlerInfo.Info requestBodyInfo = new HandlerInfo.Info();
 
 			requestBodyInfo.setType( bodyClass );
@@ -651,11 +661,11 @@ public class HandlerParser {
 		// pInfo.setType( finalType );
 		applyAnnotationsToParamInfo( variable, pInfo );
 
-		if (position.equals( LayerPosition.REQUEST_STRING )) {
-			handlerInfo.getQueryStringInfo().put( key, pInfo );
+		if (pInfo.getPosition().equals( LayerPosition.REQUEST_STRING )) {
+			handlerInfo.getQueryStringInfo().put( pInfo.getName(), pInfo );
 
-		} else if (position.equals( LayerPosition.REQUEST_PATH )) {
-			handlerInfo.getPathVariableInfo().put( key, pInfo );
+		} else if (pInfo.getPosition().equals( LayerPosition.REQUEST_PATH )) {
+			handlerInfo.getPathVariableInfo().put( pInfo.getName(), pInfo );
 
 		}
 
@@ -859,7 +869,7 @@ public class HandlerParser {
 		return (target instanceof CtInvocation<?> tInv) && isRequestQueryParamsCall( tInv );
 
 	}
-	
+
 	private boolean isQueryParamsGetCall(
 		CtInvocation<?> inv
 	) {
@@ -1160,13 +1170,39 @@ public class HandlerParser {
 		return null;
 
 	}
-	
+
 	private void parseResponseBodyFromOkChain(
 		CtInvocation<?> inv, HandlerInfo handlerInfo
 	) {
 
 		// ok().contentType(...).body(...) or bodyValue(...)
 		String name = inv.getExecutable().getSimpleName();
+
+		// ✅ @ResponseBody가 붙어있으면 그게 최우선
+		if ((name.equals( "body" ) || name.equals( "bodyValue" )) && ! inv.getArguments().isEmpty()) {
+			CtExpression<?> firstArgForAnn = inv.getArguments().get( 0 );
+			CtAnnotation<?> rbAnn = findResponseBodyAnnotationRecursive( firstArgForAnn );
+
+			if (rbAnn != null) {
+				HandlerInfo.Info annotated = buildResponseBodyInfoFromAnnotation( rbAnn, inv.getFactory() );
+
+				if (annotated != null) {
+					hasResponseBodyAnnotationOverride = true;
+					handlerInfo.getResponseBodyInfo().clear();
+					String key = (annotated.getType() != null && annotated.getType() != Object.class)
+						? annotated.getType().getSimpleName()
+						: (annotated.getTypeRef() != null ? annotated.getTypeRef().getSimpleName() : "Object");
+					handlerInfo.getResponseBodyInfo().put( key, annotated );
+					return;
+
+				}
+
+			}
+
+			// ✅ 이미 @ResponseBody로 확정된 상태면, 추론으로 들어오는 responseBody는 무시
+			if (hasResponseBodyAnnotationOverride) { return; }
+
+		}
 
 		if (name.equals( "body" ) && ! inv.getArguments().isEmpty()) {
 
@@ -1277,6 +1313,7 @@ public class HandlerParser {
 
 				finalInfo.setType( finalType );
 				finalInfo.setTypeRef( finalTypeRef );
+
 				if (isReactorType( pInfo.getType() ) && ! isJdkContainerType( finalType ) && ! isReactorType( finalType ) && finalType != null && finalType.getTypeParameters().length > 0 // 제너릭 클래스인가?
 				) {
 
@@ -1329,6 +1366,7 @@ public class HandlerParser {
 						parseClassFields( inv.getFactory().Type().createReference( finalType ), finalInfo );
 
 					}
+
 				}
 
 				// handlerInfo
@@ -1367,9 +1405,10 @@ public class HandlerParser {
 				HandlerInfo.Info pInfo = buildParamInfoFromTypeRef( valTypeRef );
 
 				handlerInfo.getResponseBodyInfo().put( pInfo.getType().getSimpleName(), pInfo );
-				
+
 				if (valTypeRef != null) {
 					parseClassFields( valTypeRef, pInfo );
+
 				}
 
 				handlerInfo
@@ -1380,6 +1419,7 @@ public class HandlerParser {
 							: (valTypeRef != null ? valTypeRef.getSimpleName() : "Object"),
 						pInfo
 					);
+
 			}
 
 		} else if (name.equals( "contentType" )) {
@@ -1686,6 +1726,8 @@ public class HandlerParser {
 
 	/**
 	 * 변수나 파라미터에 @RequestQuery, @RequestPath 어노테이션이 있으면 ParamInfo에 반영
+	 * 
+	 * @return
 	 */
 	private void applyAnnotationsToParamInfo(
 		CtVariable<?> var, HandlerInfo.Info pInfo
@@ -1696,17 +1738,19 @@ public class HandlerParser {
 
 		}
 
-		CtAnnotation<?> requestQueryAnn = var.getAnnotation( var.getFactory().Type().createReference( RequestParam.class ) );
+		CtAnnotation<?> requestQueryAnn = var.getAnnotation( var.getFactory().Type().createReference( SelectedRequestParam.class ) );
 
 		if (requestQueryAnn != null) {
 			overrideParamInfoWithAnnotation( pInfo, requestQueryAnn );
+			pInfo.setPosition( LayerPosition.REQUEST_STRING );
 
 		}
 
-		CtAnnotation<?> requestPathAnn = var.getAnnotation( var.getFactory().Type().createReference( RequestPath.class ) );
+		CtAnnotation<?> requestPathAnn = var.getAnnotation( var.getFactory().Type().createReference( SelectedRequestPath.class ) );
 
 		if (requestPathAnn != null) {
 			overrideParamInfoWithAnnotation( pInfo, requestPathAnn );
+			pInfo.setPosition( LayerPosition.REQUEST_PATH );
 
 		}
 
@@ -1722,14 +1766,14 @@ public class HandlerParser {
 		Boolean nullable;
 		Class<?> typeClass;
 
-		if (ann.getActualAnnotation() instanceof RequestParam requestParam) {
+		if (ann.getActualAnnotation() instanceof SelectedRequestParam requestParam) {
 			key = requestParam.key();
 			defaultValue = requestParam.defaultValue();
 			required = requestParam.required();
 			nullable = requestParam.nullable();
 			typeClass = requestParam.type();
 
-		} else if (ann.getActualAnnotation() instanceof RequestPath requestPath) {
+		} else if (ann.getActualAnnotation() instanceof SelectedRequestPath requestPath) {
 			key = requestPath.key();
 			defaultValue = requestPath.defaultValue();
 			required = requestPath.required();
@@ -1766,6 +1810,122 @@ public class HandlerParser {
 			pInfo.setType( typeClass );
 
 		}
+
+		return;
+
+	}
+
+	// =========================
+	// ResponseBody annotation
+	// =========================
+
+	private CtAnnotation<?> findResponseBodyAnnotationRecursive(
+		CtExpression<?> expr
+	) {
+
+		if (expr == null)
+			return null;
+
+		// 1) 변수에 붙은 @ResponseBody 찾기 (local var / parameter)
+		CtVariable<?> varDecl = extractVariableDeclaration( expr );
+
+		if (varDecl != null) {
+			CtAnnotation<?> ann = varDecl.getAnnotation( varDecl.getFactory().Type().createReference( SelectedResponseBody.class ) );
+			if (ann != null)
+				return ann;
+
+		}
+
+		// 2) 표현식이 invocation이면 (a) 메서드에 붙은 @ResponseBody (b) target/args 재귀
+		if (expr instanceof CtInvocation<?> inv) {
+			CtAnnotation<?> methodAnn = findResponseBodyOnInvokedMethod( inv );
+			if (methodAnn != null)
+				return methodAnn;
+
+			if (inv.getTarget() instanceof CtExpression<?> t) {
+				CtAnnotation<?> a = findResponseBodyAnnotationRecursive( t );
+				if (a != null)
+					return a;
+
+			}
+
+			for (CtExpression<?> a : inv.getArguments()) {
+				CtAnnotation<?> x = findResponseBodyAnnotationRecursive( a );
+				if (x != null)
+					return x;
+
+			}
+
+		}
+
+		return null;
+
+	}
+
+	private CtVariable<?> extractVariableDeclaration(
+		CtExpression<?> expr
+	) {
+
+		if (expr instanceof CtVariableRead<?> vr && vr.getVariable() != null) { return vr.getVariable().getDeclaration(); }
+
+		return null;
+
+	}
+
+	private CtAnnotation<?> findResponseBodyOnInvokedMethod(
+		CtInvocation<?> inv
+	) {
+
+		CtExecutableReference<?> execRef = inv.getExecutable();
+		if (execRef == null || execRef.getDeclaringType() == null)
+			return null;
+
+		CtType<?> declaringType = execRef.getDeclaringType().getTypeDeclaration();
+		if (declaringType == null)
+			return null;
+
+		var annType = inv.getFactory().Type().createReference( SelectedResponseBody.class );
+		List<CtMethod<?>> candidates = declaringType
+			.getMethods()
+			.stream()
+			.filter( m -> m.getSimpleName().equals( execRef.getSimpleName() ) )
+			.toList();
+
+		for (CtMethod<?> m : candidates) {
+			CtAnnotation<?> ann = m.getAnnotation( annType );
+			if (ann != null)
+				return ann;
+
+		}
+
+		return null;
+
+	}
+
+	private HandlerInfo.Info buildResponseBodyInfoFromAnnotation(
+		CtAnnotation<?> ann, Factory factory
+	) {
+
+		if (! (ann.getActualAnnotation() instanceof SelectedResponseBody rb))
+			return null;
+		Class<?> typeClass = rb.type();
+		if (typeClass == null || typeClass == Void.class || typeClass == void.class)
+			return null;
+
+		CtTypeReference<?> typeRef = factory.Type().createReference( typeClass );
+		HandlerInfo.Info info = buildParamInfoFromTypeRef( typeRef );
+		info.setType( typeClass );
+		info.setTypeRef( typeRef );
+		info.setNullable( rb.nullable() );
+		info.setPosition( LayerPosition.RESPONSE_BODY );
+
+		// 필드 파싱 (POJO/record/프로젝트 패키지 등 기존 조건에 맞춰 확장)
+		if (typeRef != null) {
+			parseClassFields( typeRef, info );
+
+		}
+
+		return unwrapIfReactorType( info );
 
 	}
 

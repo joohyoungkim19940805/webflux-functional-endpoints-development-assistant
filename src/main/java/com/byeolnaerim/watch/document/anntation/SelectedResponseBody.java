@@ -1,26 +1,17 @@
-package com.byeolnaerim.watch.swagger.anntation;
-
+package com.byeolnaerim.watch.document.anntation;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-
 @Retention(RetentionPolicy.RUNTIME)
 @Target({
-	ElementType.LOCAL_VARIABLE, ElementType.PARAMETER
+	ElementType.LOCAL_VARIABLE, ElementType.PARAMETER, ElementType.METHOD
 })
-public @interface RequestParam {
-
-	String key() default "";
-
-	String defaultValue() default "";
-
-	boolean required() default true;
+public @interface SelectedResponseBody {
 
 	boolean nullable() default false;
 
 	Class<?> type() default Void.class;
-
 }
