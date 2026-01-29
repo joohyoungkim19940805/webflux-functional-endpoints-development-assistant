@@ -1,4 +1,4 @@
-package com.byeolnaerim.watch.swagger;
+package com.byeolnaerim.watch.document.swagger;
 
 
 import java.io.IOException;
@@ -11,9 +11,14 @@ import java.util.List;
 import com.byeolnaerim.watch.AbstractWatcher;
 import com.byeolnaerim.watch.ProjectDefaults;
 import com.byeolnaerim.watch.RouteUtil;
+import com.byeolnaerim.watch.document.swagger.functional.HandlerParser;
+import com.byeolnaerim.watch.document.swagger.functional.RouteInfo;
+import com.byeolnaerim.watch.document.swagger.functional.RouteParser;
+import com.byeolnaerim.watch.document.swagger.mvc.MvcParser;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import spoon.Launcher;
+import spoon.reflect.CtModel;
 import spoon.reflect.code.CtInvocation;
 import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.visitor.filter.TypeFilter;
@@ -21,11 +26,17 @@ import spoon.reflect.visitor.filter.TypeFilter;
 
 public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
+	public static enum ProjectMode {
+		MVC, FUNCTIONAL_ENDPOINT
+	}
+
 	public static final class Config {
 
 		private final String watchDirectory;
 
 		private final String swaggerOutputFile; // = "src/main/resources/static/swagger.json";
+
+		private final ProjectMode projectMode;
 
 		private Config(
 						Builder b
@@ -35,12 +46,15 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 			int lastDotIndex = b.swaggerOutputFile.lastIndexOf( '.' );
 
 			if (lastDotIndex == -1) {
-				this.swaggerOutputFile = b.swaggerOutputFile.substring( 0, lastDotIndex ).replace( '\\', '/' ) + ".json";
+				this.swaggerOutputFile = b.swaggerOutputFile.replace( '\\', '/' ).replace( '.', '/' ) + ".json";
 
 			} else {
 				this.swaggerOutputFile = b.swaggerOutputFile.substring( 0, lastDotIndex ).replace( '\\', '/' ).replace( '.', '/' ) + b.swaggerOutputFile.substring( lastDotIndex );
 
 			}
+
+			this.projectMode = (b.projectMode != null) ? b.projectMode : ProjectMode.FUNCTIONAL_ENDPOINT;
+
 
 		}
 
@@ -56,6 +70,12 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 		}
 
+		public ProjectMode projectMode() {
+
+			return projectMode;
+
+		}
+
 		public static Builder builder() {
 
 			return new Builder();
@@ -67,6 +87,8 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 			private String watchDirectory = ProjectDefaults.SRC_MAIN_JAVA;
 
 			private String swaggerOutputFile = ProjectDefaults.SWAGGER_OUTPUT_FILE;
+
+			private ProjectMode projectMode = ProjectMode.FUNCTIONAL_ENDPOINT;
 
 			public Builder watchDirectory(
 				String p
@@ -82,6 +104,15 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 			) {
 
 				this.swaggerOutputFile = p;
+				return this;
+
+			}
+
+			public Builder projectMode(
+				ProjectMode mode
+			) {
+
+				this.projectMode = (mode != null) ? mode : ProjectMode.FUNCTIONAL_ENDPOINT;
 				return this;
 
 			}
@@ -182,8 +213,12 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 		launcher.getEnvironment().setNoClasspath( true );
 		launcher.buildModel();
 
-		List<CtMethod<?>> routerMethods = launcher
-			.getModel()
+		CtModel model = launcher.getModel();
+
+		// ✅ MVC 모드면 annotated 기반 파서로
+		if (config.projectMode() == ProjectMode.MVC) { return MvcParser.parseRoutes( model ); }
+
+		List<CtMethod<?>> routerMethods = model
 			.getElements(
 				(CtMethod<?> m) -> m.getAnnotations().stream().anyMatch( a -> a.getAnnotationType().getSimpleName().equals( "Bean" ) ) && m.getType().getSimpleName().contains( "RouterFunction" )
 			);

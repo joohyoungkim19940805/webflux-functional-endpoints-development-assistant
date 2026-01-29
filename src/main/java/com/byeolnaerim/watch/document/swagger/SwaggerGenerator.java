@@ -1,4 +1,4 @@
-package com.byeolnaerim.watch.swagger;
+package com.byeolnaerim.watch.document.swagger;
 
 
 import java.io.File;
@@ -14,8 +14,12 @@ import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 import com.byeolnaerim.watch.RouteUtil;
-import com.byeolnaerim.watch.swagger.HandlerInfo.Info;
-import com.byeolnaerim.watch.swagger.HandlerInfo.LayerPosition;
+import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo;
+import com.byeolnaerim.watch.document.swagger.functional.HandlerParser;
+import com.byeolnaerim.watch.document.swagger.functional.RouteInfo;
+import com.byeolnaerim.watch.document.swagger.functional.RouteParser;
+import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo.Info;
+import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo.LayerPosition;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtInvocation;

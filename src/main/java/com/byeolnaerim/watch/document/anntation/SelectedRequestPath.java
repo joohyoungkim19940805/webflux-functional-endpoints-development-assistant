@@ -1,4 +1,4 @@
-package com.byeolnaerim.watch.swagger.anntation;
+package com.byeolnaerim.watch.document.anntation;
 
 
 import java.lang.annotation.ElementType;
@@ -11,7 +11,7 @@ import java.lang.annotation.Target;
 @Target({
 	ElementType.LOCAL_VARIABLE, ElementType.PARAMETER
 })
-public @interface RequestPath {
+public @interface SelectedRequestPath {
 
 	String key() default "";
 

@@ -1,4 +1,4 @@
-package com.byeolnaerim.watch.swagger;
+package com.byeolnaerim.watch.document.swagger.functional;
 
 
 import java.util.ArrayList;
