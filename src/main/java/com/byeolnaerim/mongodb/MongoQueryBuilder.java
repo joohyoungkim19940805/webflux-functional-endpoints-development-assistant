@@ -50,6 +50,7 @@ import org.springframework.data.repository.reactive.ReactiveCrudRepository;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import com.byeolnaerim.mongodb.FieldsPair.Condition;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.ExecuteBuilder;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.LookupSpec;
 import com.mongodb.ReadPreference;
 import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.result.DeleteResult;
@@ -4604,6 +4605,7 @@ public class MongoQueryBuilder<K> {
 
 		}
 
+
 		public class AtomicUpdateQueryBuilder {
 
 			private final Update update = new Update();
@@ -4682,6 +4684,23 @@ public class MongoQueryBuilder<K> {
 			) {
 
 				return set( field.name(), value );
+
+			}
+
+			public AtomicUpdateQueryBuilder setOnInsert(
+				String field, Object value
+			) {
+
+				update.setOnInsert( requireField( field ), value );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder setOnInsert(
+				Enum<?> field, Object value
+			) {
+
+				return setOnInsert( field.name(), value );
 
 			}
 
@@ -4798,6 +4817,7 @@ public class MongoQueryBuilder<K> {
 
 	}
 
+
 	public class ExecuteEntityBuilder<E> extends AbstractQueryBuilder<E, ExecuteEntityBuilder<E>> implements ExecuteBuilder {
 
 		@SuppressWarnings("unchecked")
@@ -4829,6 +4849,7 @@ public class MongoQueryBuilder<K> {
 		}
 
 	}
+
 
 	public class ExecuteCustomClassBuilder<E> extends AbstractQueryBuilder<E, ExecuteCustomClassBuilder<E>> implements ExecuteBuilder {
 
