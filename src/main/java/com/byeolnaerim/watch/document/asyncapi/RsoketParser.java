@@ -171,7 +171,12 @@ public class RsoketParser {
 		HandlerInfo.Info resp = parseResponseBody( method );
 
 		if (resp != null) {
-			String key = (resp.getType() != null) ? resp.getType().getSimpleName() : "Response";
+			String key;
+			if (resp.getType() != null && resp.getType() != Object.class) {
+				key = resp.getType().getSimpleName();
+			} else {
+				key = method.getSimpleName() + "Response";
+			}
 			info.getResponseBodyInfo().put( key, resp );
 
 		}
