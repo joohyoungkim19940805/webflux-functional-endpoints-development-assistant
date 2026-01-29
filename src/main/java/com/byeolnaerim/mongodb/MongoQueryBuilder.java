@@ -54,6 +54,7 @@ import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.LookupSpec
 import com.mongodb.ReadPreference;
 import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.result.DeleteResult;
+import com.mongodb.client.result.UpdateResult;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import tools.jackson.databind.ObjectMapper;
@@ -62,8 +63,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 public class MongoQueryBuilder<K> {
 
-    private final MongoTemplateResolver<K> resolver;
-	
+	private final MongoTemplateResolver<K> resolver;
+
 	private final ObjectMapper objectMapper;
 
 	private final static ConcurrentHashMap<Class<? extends ReactiveCrudRepository<?, ?>>, Class<?>> entityClassCache = new ConcurrentHashMap<>();
@@ -71,7 +72,9 @@ public class MongoQueryBuilder<K> {
 	// 지구 반지름 (meters)
 	static final double EARTH_RADIUS_M = 6_378_137.0;
 
-    public MongoQueryBuilder(MongoTemplateResolver<K> resolver) {
+	public MongoQueryBuilder(
+								MongoTemplateResolver<K> resolver
+	) {
 
 		this( resolver, JsonMapper.builder().build() );
 
@@ -81,9 +84,12 @@ public class MongoQueryBuilder<K> {
 								MongoTemplateResolver<K> resolver,
 								ObjectMapper objectMapper
 	) {
-        this.resolver = resolver;
+
+		this.resolver = resolver;
 		this.objectMapper = objectMapper;
-    }
+
+	}
+
 	public static <T> Flux<FieldsPair<String, Object>> extractFieldsPairs(
 		T entity, String... fieldNames
 	) {
@@ -486,18 +492,30 @@ public class MongoQueryBuilder<K> {
 	}
 
 
-    public ReactiveMongoTemplate getMongoTemplate(K key) {
-        return resolver.getTemplate(key);
-    }
+	public ReactiveMongoTemplate getMongoTemplate(
+		K key
+	) {
 
-    public TransactionalOperator getTxOperator(K key) {
-        return resolver.getTxOperator(key);
-    }
+		return resolver.getTemplate( key );
 
-    public <T> Mono<T> getTxJob(K key, Supplier<? extends Mono<? extends T>> supplier) {
-        var op = resolver.getTxOperator(key);
-        return Mono.defer(supplier).as(op::transactional);
-    }
+	}
+
+	public TransactionalOperator getTxOperator(
+		K key
+	) {
+
+		return resolver.getTxOperator( key );
+
+	}
+
+	public <T> Mono<T> getTxJob(
+		K key, Supplier<? extends Mono<? extends T>> supplier
+	) {
+
+		var op = resolver.getTxOperator( key );
+		return Mono.defer( supplier ).as( op::transactional );
+
+	}
 
 
 	// 트렌젝션 사용 방식
@@ -781,6 +799,7 @@ public class MongoQueryBuilder<K> {
 			}
 
 		}
+
 		/**
 		 * Iterable<E>를 받아 대량 저장(Bulk Upsert)을 수행합니다.
 		 * 
@@ -960,6 +979,432 @@ public class MongoQueryBuilder<K> {
 				} );
 
 		}
+
+		public Mono<BulkWriteResult> saveAllBulkUpsertByKey(
+			Flux<E> entityFlux, String... keyFieldName // 예: "caseKey" 또는 "court","year","caseNo"
+		) {
+
+			if (entityFlux == null)
+				return Mono.error( new IllegalArgumentException( "entityFlux must not be null" ) );
+			if (keyFieldName == null || keyFieldName.length == 0)
+				return Mono.error( new IllegalArgumentException( "keyFieldName must not be null/empty" ) );
+
+			// blank 방지 + 정규화
+			final String[] keys = Arrays
+				.stream( keyFieldName )
+				.filter( Objects::nonNull )
+				.map( String::trim )
+				.filter( s -> ! s.isBlank() )
+				.toArray( String[]::new );
+
+			if (keys.length == 0)
+				return Mono.error( new IllegalArgumentException( "keyFieldName must contain at least 1 non-blank field" ) );
+
+			AtomicReference<ReactiveBulkOperations> bulkRef = new AtomicReference<>();
+			AtomicReference<Field[]> keyFieldsRef = new AtomicReference<>();
+			AtomicBoolean hasValue = new AtomicBoolean( false );
+
+			return entityFlux
+				// bulkOps에 작업 쌓기는 side-effect -> 순차로 안전하게
+				.concatMap( entity -> {
+					hasValue.set( true );
+
+					ReactiveBulkOperations bulkOps = bulkRef.get();
+					Field[] keyFields = keyFieldsRef.get();
+
+					// 첫 요소에서 lazy init
+					if (bulkOps == null) {
+						Class<?> entityClass = entity.getClass();
+
+						Field[] fs = new Field[keys.length];
+
+						try {
+
+							for (int i = 0; i < keys.length; i++) {
+								Field f = entityClass.getDeclaredField( keys[i] );
+								f.setAccessible( true );
+								fs[i] = f;
+
+							}
+
+						} catch (NoSuchFieldException e) {
+							return Mono
+								.error(
+									new IllegalArgumentException(
+										"No field in " + entityClass.getName() + ": " + e.getMessage(),
+										e
+									)
+								);
+
+						}
+
+						ReactiveBulkOperations newBulk = reactiveMongoTemplate.bulkOps( BulkOperations.BulkMode.UNORDERED, entityClass );
+
+						bulkRef.set( newBulk );
+						keyFieldsRef.set( fs );
+
+						bulkOps = newBulk;
+						keyFields = fs;
+
+					}
+
+					try {
+						// keyDoc 구성 + null 체크
+						Document keyDoc = new Document();
+
+						for (int i = 0; i < keys.length; i++) {
+							Object v = keyFields[i].get( entity );
+
+							if (v == null) {
+								// 정책: 키 하나라도 없으면 upsert 불가 -> insert(또는 skip/에러로 바꿔도 됨)
+								bulkOps.insert( entity );
+								return Mono.empty();
+
+							}
+
+							keyDoc.append( keys[i], v );
+
+						}
+
+						// Query: 단일키면 where, 복합키면 andOperator
+						Query query;
+
+						if (keys.length == 1) {
+							query = Query.query( Criteria.where( keys[0] ).is( keyDoc.get( keys[0] ) ) );
+
+						} else {
+							Criteria[] cs = new Criteria[keys.length];
+
+							for (int i = 0; i < keys.length; i++) {
+								cs[i] = Criteria.where( keys[i] ).is( keyDoc.get( keys[i] ) );
+
+							}
+
+							query = Query.query( new Criteria().andOperator( cs ) );
+
+						}
+
+						// Update: 엔티티 -> doc 변환 후 _id 제거
+						Document doc = new Document();
+						reactiveMongoTemplate.getConverter().write( entity, doc );
+						doc.remove( "_id" );
+
+						Document updateDoc = new Document()
+							.append( "$set", new Document( doc ) )
+							.append( "$setOnInsert", new Document( keyDoc ) ); // 키 필드들 고정
+
+						bulkOps.upsert( query, new BasicUpdate( updateDoc ) );
+						return Mono.empty();
+
+					} catch (IllegalAccessException e) {
+						return Mono.error( new RuntimeException( "Failed to access key field(s)", e ) );
+
+					}
+
+				} )
+				.then( Mono.defer( () -> {
+					if (! hasValue.get())
+						return Mono.empty();
+					ReactiveBulkOperations bulkOps = bulkRef.get();
+					if (bulkOps == null)
+						return Mono.empty();
+					return bulkOps.execute();
+
+				} ) )
+				.doFinally( st -> {
+					Field[] fs = keyFieldsRef.get();
+
+					if (fs != null) {
+
+						for (Field f : fs) {
+							if (f != null)
+								f.setAccessible( false );
+
+						}
+
+					}
+
+				} );
+
+		}
+
+
+		public Mono<BulkWriteResult> saveAllBulkUpsertByKey(
+			Collection<E> entities, String... keyFieldName // 예: "caseKey" 또는 "court", "year", "caseNo"
+		) {
+
+			if (entities == null || entities.isEmpty())
+				return Mono.empty();
+			if (keyFieldName == null || keyFieldName.length == 0)
+				return Mono.error( new IllegalArgumentException( "keyFieldName must not be null/empty" ) );
+
+			// blank 방지
+			String[] keys = Arrays
+				.stream( keyFieldName )
+				.filter( Objects::nonNull )
+				.map( String::trim )
+				.filter( s -> ! s.isBlank() )
+				.toArray( String[]::new );
+
+			if (keys.length == 0)
+				return Mono.error( new IllegalArgumentException( "keyFieldName must contain at least 1 non-blank field" ) );
+
+			Class<?> entityClass = entities.iterator().next().getClass();
+
+			// key Field들 준비
+			final Field[] keyFields = new Field[keys.length];
+
+			try {
+
+				for (int i = 0; i < keys.length; i++) {
+					Field f = entityClass.getDeclaredField( keys[i] );
+					f.setAccessible( true );
+					keyFields[i] = f;
+
+				}
+
+			} catch (NoSuchFieldException e) {
+				// 어떤 키에서 터졌는지 메시지 보강
+				return Mono.error( new IllegalArgumentException( "No field in " + entityClass.getName() + ": " + e.getMessage(), e ) );
+
+			}
+
+			ReactiveBulkOperations bulkOps = reactiveMongoTemplate.bulkOps( BulkOperations.BulkMode.UNORDERED, entityClass );
+
+			try {
+
+				for (E entity : entities) {
+
+					// 1) key 값 수집 + null 체크
+					Document keyDoc = new Document(); // {k1:v1, k2:v2...} (setOnInsert에도 재사용)
+					boolean missingKey = false;
+
+					for (int i = 0; i < keys.length; i++) {
+						Object v = keyFields[i].get( entity );
+
+						if (v == null) {
+							missingKey = true;
+							break;
+
+						}
+
+						keyDoc.append( keys[i], v );
+
+					}
+
+					if (missingKey) {
+						// 정책: 키가 하나라도 없으면 upsert 기준이 없으니 insert(또는 skip/에러) 중 택1
+						bulkOps.insert( entity );
+						continue;
+
+					}
+
+					// 2) Query: AND 조건으로 결합 (복합키)
+					Criteria[] cs = new Criteria[keys.length];
+
+					for (int i = 0; i < keys.length; i++) {
+						cs[i] = Criteria.where( keys[i] ).is( keyDoc.get( keys[i] ) );
+
+					}
+
+					Query query = Query.query( new Criteria().andOperator( cs ) );
+
+					// 3) Update document 생성
+					Document doc = new Document();
+					reactiveMongoTemplate.getConverter().write( entity, doc );
+					doc.remove( "_id" ); // _id는 기본 생성 유지
+
+					for (String k : keys) {
+						doc.remove( k );
+
+					}
+
+					// 업데이트는 $set, 키는 불변 가정이면 $setOnInsert로만
+					Document updateDoc = new Document()
+						.append( "$set", new Document( doc ) )
+						.append( "$setOnInsert", new Document( keyDoc ) ); // key들 전부 넣기
+
+					bulkOps.upsert( query, new BasicUpdate( updateDoc ) );
+
+				}
+
+			} catch (IllegalAccessException e) {
+				return Mono.error( new RuntimeException( "Failed to access key field(s)", e ) );
+
+			} finally {
+
+				for (Field f : keyFields) {
+					if (f != null)
+						f.setAccessible( false );
+
+				}
+
+			}
+
+			return bulkOps.execute();
+
+		}
+
+		private String resolveRemoveCollectionName(
+			Class<?> clazz
+		) {
+
+			var doc = clazz
+				.getDeclaredAnnotation(
+					org.springframework.data.mongodb.core.mapping.Document.class
+				);
+
+			if (doc == null || doc.collection() == null || doc.collection().isBlank()) { return clazz.getSimpleName() + "_remove"; }
+
+			return doc.collection() + "_remove";
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Iterable<E> entities
+		) {
+
+			return deleteBulk( Flux.fromIterable( entities ), false );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Iterable<E> entities, boolean isBackup
+		) {
+
+			return deleteBulk( Flux.fromIterable( entities ), isBackup );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Collection<E> entities
+		) {
+
+			return deleteBulk( Flux.fromIterable( entities ), false );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Collection<E> entities, boolean isBackup
+		) {
+
+			return deleteBulk( Flux.fromIterable( entities ), isBackup );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Flux<E> entityFlux
+		) {
+
+			return deleteBulk( entityFlux, false );
+
+		}
+
+		public Mono<BulkWriteResult> deleteBulk(
+			Flux<E> entityFlux, boolean isBackup
+		) {
+
+			if (! isBackup) { return deleteBulkInternal( entityFlux ); }
+
+			// backup이 필요한 경우엔 엔티티를 재사용해야 하므로 list로 한번 모음
+			return entityFlux
+				.collectList()
+				.flatMap( list -> {
+
+					if (list.isEmpty())
+						return Mono.empty();
+
+					Class<?> entityClass = list.get( 0 ).getClass();
+					String backupCollectionName = resolveRemoveCollectionName( entityClass );
+
+					// 백업 먼저 적재 -> 그 다음 bulk delete
+					return reactiveMongoTemplate
+						.insert( list, backupCollectionName )
+						.then( deleteBulkInternal( Flux.fromIterable( list ) ) );
+
+				} );
+
+		}
+
+		/**
+		 * 실제 bulk delete 수행(backup 없이).
+		 * saveAllBulkUpsert(Flux)와 동일한 lazy-init 패턴을 사용합니다.
+		 */
+		private Mono<BulkWriteResult> deleteBulkInternal(
+			Flux<E> entityFlux
+		) {
+
+			AtomicReference<ReactiveBulkOperations> bulkRef = new AtomicReference<>();
+			AtomicReference<Field> idFieldRef = new AtomicReference<>();
+			AtomicBoolean hasValue = new AtomicBoolean( false );
+
+			return entityFlux
+				.flatMap( entity -> {
+
+					hasValue.set( true );
+
+					ReactiveBulkOperations bulkOps = bulkRef.get();
+					Field idField = idFieldRef.get();
+
+					// 첫 요소에서 lazy init
+					if (bulkOps == null) {
+						Class<?> entityClass = entity.getClass();
+
+						Field f = findIdField( entityClass );
+						f.setAccessible( true );
+
+						ReactiveBulkOperations newBulk = reactiveMongoTemplate
+							.bulkOps( BulkOperations.BulkMode.UNORDERED, entityClass );
+
+						bulkRef.set( newBulk );
+						idFieldRef.set( f );
+
+						bulkOps = newBulk;
+						idField = f;
+
+					}
+
+					try {
+						Object id = idField.get( entity );
+
+						// id 없으면 삭제 대상에서 제외
+						if (id == null)
+							return Mono.empty();
+
+						Query q = Query.query( Criteria.where( "_id" ).is( id ) );
+						bulkOps.remove( q );
+
+						return Mono.empty();
+
+					} catch (IllegalAccessException e) {
+						return Mono.error( new RuntimeException( "Failed to access @Id field via reflection", e ) );
+
+					}
+
+				} )
+				.then(
+					Mono.defer( () -> {
+
+						if (! hasValue.get())
+							return Mono.empty();
+
+						ReactiveBulkOperations bulkOps = bulkRef.get();
+						if (bulkOps == null)
+							return Mono.empty();
+
+						return bulkOps.execute();
+
+					} )
+				)
+				.doFinally( signalType -> {
+					Field idField = idFieldRef.get();
+					if (idField != null)
+						idField.setAccessible( false );
+
+				} );
+
+		}
+
 		public Mono<DeleteResult> delete(
 			E e
 		) {
@@ -1045,15 +1490,21 @@ public class MongoQueryBuilder<K> {
 				);
 
 		}
-		
+
 		@SuppressWarnings("unchecked")
-		private E deepClone(E e, ObjectMapper objectMapper) {
-		    try {
-		        String json = objectMapper.writeValueAsString(e);
-		        return (E) objectMapper.readValue(json, e.getClass());
-		    } catch (Exception ex) {
-		        throw new RuntimeException("Failed to clone entity for history", ex);
-		    }
+		private E deepClone(
+			E e, ObjectMapper objectMapper
+		) {
+
+			try {
+				String json = objectMapper.writeValueAsString( e );
+				return (E) objectMapper.readValue( json, e.getClass() );
+
+			} catch (Exception ex) {
+				throw new RuntimeException( "Failed to clone entity for history", ex );
+
+			}
+
 		}
 
 		public Mono<Void> createHistory(
@@ -1103,7 +1554,7 @@ public class MongoQueryBuilder<K> {
 
 			String backupCollectionName = base + "_" + _prefix;
 
-			E snapshot = deepClone(e, objectMapper);
+			E snapshot = deepClone( e, objectMapper );
 
 			MongoMappingContext ctx = (MongoMappingContext) reactiveMongoTemplate.getConverter().getMappingContext();
 			MongoPersistentEntity<?> pe = ctx.getPersistentEntity( snapshot.getClass() );
@@ -1252,9 +1703,9 @@ public class MongoQueryBuilder<K> {
 				Class<?> entityClass = (Class<?>) entityType;
 
 				// 엔티티 클래스가 BaseEntity를 상속하는지 확인
-//				if (! BaseEntity.class.isAssignableFrom( entityClass )) { throw new IllegalArgumentException(
-//					"The entity class '" + entityClass.getName() + "' must extend 'BaseEntity'."
-//				); }
+				// if (! BaseEntity.class.isAssignableFrom( entityClass )) { throw new IllegalArgumentException(
+				// "The entity class '" + entityClass.getName() + "' must extend 'BaseEntity'."
+				// ); }
 
 				return (Class<E>) entityClass;
 
@@ -1486,96 +1937,119 @@ public class MongoQueryBuilder<K> {
 			}
 
 			// 내부: 파이프라인 구성/실행
-			private <R2> Mono<Map<KK, V>> buildAndRun(LookupCtx<R2> lookup, Sort dummy) {
+			private <R2> Mono<Map<KK, V>> buildAndRun(
+				LookupCtx<R2> lookup, Sort dummy
+			) {
 
-			    if (keyFields.isEmpty()) throw new IllegalStateException("group by keys are not specified.");
-			    if (!hasAccumulator) count();
+				if (keyFields.isEmpty())
+					throw new IllegalStateException( "group by keys are not specified." );
+				if (! hasAccumulator)
+					count();
 
-			    Mono<Class<E>> leftClassMono = executeClassMono;
+				Mono<Class<E>> leftClassMono = executeClassMono;
 
-			    return Mono.zip(fieldBuilder.buildCriteria(), leftClassMono)
-			        .flatMap(tuple -> {
-			            Optional<Criteria> leftMatch = tuple.getT1();
-			            Class<E> leftClass = tuple.getT2();
+				return Mono
+					.zip( fieldBuilder.buildCriteria(), leftClassMono )
+					.flatMap( tuple -> {
+						Optional<Criteria> leftMatch = tuple.getT1();
+						Class<E> leftClass = tuple.getT2();
 
-			            String leftColl = (collectionName != null && !collectionName.isBlank())
-			                ? collectionName
-			                : reactiveMongoTemplate.getCollectionName(leftClass);
+						String leftColl = (collectionName != null && ! collectionName.isBlank())
+							? collectionName
+							: reactiveMongoTemplate.getCollectionName( leftClass );
 
-			            List<AggregationOperation> ops = new ArrayList<>();
-			            leftMatch.ifPresent(c -> ops.add(Aggregation.match(c)));
+						List<AggregationOperation> ops = new ArrayList<>();
+						leftMatch.ifPresent( c -> ops.add( Aggregation.match( c ) ) );
 
-			            Mono<List<AggregationOperation>> opsMono =
-			                (lookup == null)
-			                    ? Mono.just(ops)
-			                    : lookup.rightClass().map(rightClass -> {
-			                        String rightColl = (lookup.rightCollectionName() != null && !lookup.rightCollectionName().isBlank())
-			                            ? lookup.rightCollectionName()
-			                            : reactiveMongoTemplate.getCollectionName(rightClass);
+						Mono<List<AggregationOperation>> opsMono = (lookup == null)
+							? Mono.just( ops )
+							: lookup.rightClass().map( rightClass -> {
+								String rightColl = (lookup.rightCollectionName() != null && ! lookup.rightCollectionName().isBlank())
+									? lookup.rightCollectionName()
+									: reactiveMongoTemplate.getCollectionName( rightClass );
 
-			                        String rightAs = (lookup.spec.as != null && !lookup.spec.as.isBlank())
-			                            ? lookup.spec.as
-			                            : rightClass.getSimpleName();
+								String rightAs = (lookup.spec.as != null && ! lookup.spec.as.isBlank())
+									? lookup.spec.as
+									: rightClass.getSimpleName();
 
-			                        Document lk = new Document("from", rightColl).append("as", rightAs);
+								Document lk = new Document( "from", rightColl ).append( "as", rightAs );
 
-			                        if (lookup.spec.localField != null && lookup.spec.foreignField != null) {
-			                            lk.append("localField", lookup.spec.localField)
-			                              .append("foreignField", lookup.spec.foreignField);
-			                        } else {
-			                            lk.append("let", Optional.ofNullable(lookup.spec.letDoc).orElseGet(Document::new))
-			                              .append("pipeline", Optional.ofNullable(lookup.spec.pipelineDocs).orElseGet(List::of));
-			                        }
+								if (lookup.spec.localField != null && lookup.spec.foreignField != null) {
+									lk
+										.append( "localField", lookup.spec.localField )
+										.append( "foreignField", lookup.spec.foreignField );
 
-			                        ops.add(ctx -> new Document("$lookup", lk));
+								} else {
+									lk
+										.append( "let", Optional.ofNullable( lookup.spec.letDoc ).orElseGet( Document::new ) )
+										.append( "pipeline", Optional.ofNullable( lookup.spec.pipelineDocs ).orElseGet( List::of ) );
 
-			                        if (lookup.spec.unwind) {
-			                            ops.add(ctx -> new Document(
-			                                "$unwind",
-			                                new Document("path", "$" + rightAs)
-			                                    .append("preserveNullAndEmptyArrays", lookup.spec.preserveNullAndEmptyArrays)
-			                            ));
-			                        }
+								}
 
-			                        if (lookup.spec.getOuterStages() != null) {
-			                            for (Document st : lookup.spec.getOuterStages()) {
-			                                ops.add(ctx -> st);
-			                            }
-			                        }
+								ops.add( ctx -> new Document( "$lookup", lk ) );
 
-			                        return ops;
-			                    });
+								if (lookup.spec.unwind) {
+									ops
+										.add(
+											ctx -> new Document(
+												"$unwind",
+												new Document( "path", "$" + rightAs )
+													.append( "preserveNullAndEmptyArrays", lookup.spec.preserveNullAndEmptyArrays )
+											)
+										);
 
-			            return opsMono.flatMap(opList -> {
-			                Object groupId = (keyFields.size() == 1)
-			                    ? "$" + keyFields.get(0)
-			                    : new Document().append(keyFields.get(0), "$" + keyFields.get(0)); // 아래에서 제대로 채움
+								}
 
-			                if (keyFields.size() > 1) {
-			                    Document gid = new Document();
-			                    for (String k : keyFields) gid.append(k, "$" + k);
-			                    groupId = gid;
-			                }
+								if (lookup.spec.getOuterStages() != null) {
 
-			                Document groupBody = new Document("_id", groupId);
-			                for (String as : accumulators.keySet()) groupBody.append(as, accumulators.get(as));
-			                opList.add(ctx -> new Document("$group", groupBody));
+									for (Document st : lookup.spec.getOuterStages()) {
+										ops.add( ctx -> st );
 
-			                Aggregation agg = applyAggOptions(Aggregation.newAggregation(opList));
+									}
 
-			                Flux<Document> flux = (collectionName != null && !collectionName.isBlank())
-			                    ? reactiveMongoTemplate.aggregate(agg, leftColl, Document.class)
-			                    : reactiveMongoTemplate.aggregate(agg, leftClass, Document.class);
+								}
 
-			                return flux.collect(LinkedHashMap::new, (LinkedHashMap<KK, V> map, Document d) -> {
-			                    KK key = this.keyConverter.apply(d);
-			                    Document vd = new Document(d);
-			                    vd.remove("_id");
-			                    V v = this.valueConverter.apply(vd);
-			                    map.put(key, v);
-			                });
-			            });
-			        });
+								return ops;
+
+							} );
+
+						return opsMono.flatMap( opList -> {
+							Object groupId = (keyFields.size() == 1)
+								? "$" + keyFields.get( 0 )
+								: new Document().append( keyFields.get( 0 ), "$" + keyFields.get( 0 ) ); // 아래에서 제대로 채움
+
+							if (keyFields.size() > 1) {
+								Document gid = new Document();
+								for (String k : keyFields)
+									gid.append( k, "$" + k );
+								groupId = gid;
+
+							}
+
+							Document groupBody = new Document( "_id", groupId );
+							for (String as : accumulators.keySet())
+								groupBody.append( as, accumulators.get( as ) );
+							opList.add( ctx -> new Document( "$group", groupBody ) );
+
+							Aggregation agg = applyAggOptions( Aggregation.newAggregation( opList ) );
+
+							Flux<Document> flux = (collectionName != null && ! collectionName.isBlank())
+								? reactiveMongoTemplate.aggregate( agg, leftColl, Document.class )
+								: reactiveMongoTemplate.aggregate( agg, leftClass, Document.class );
+
+							return flux.collect( LinkedHashMap::new, (LinkedHashMap<KK, V> map, Document d) -> {
+								KK key = this.keyConverter.apply( d );
+								Document vd = new Document( d );
+								vd.remove( "_id" );
+								V v = this.valueConverter.apply( vd );
+								map.put( key, v );
+
+							} );
+
+						} );
+
+					} );
+
 			}
 
 			// $lookup 컨텍스트 Helper
@@ -1912,6 +2386,34 @@ public class MongoQueryBuilder<K> {
 
 				}
 
+				/**
+				 * 왼쪽 필드(String ObjectId hex)를 ObjectId로 변환해서 오른쪽 필드(ObjectId)와 비교하도록 바인딩
+				 * - 예: left.auctionId(String) == right._id(ObjectId)
+				 * - $convert 사용: 변환 실패 시 null로 처리되어 쿼리 에러 없이 매칭 0건 처리됨
+				 */
+				public Builder bindConditionFieldsLeftToObjectId(
+					String leftFieldPath, Condition cond, String rightFieldPath
+				) {
+
+					String var = nextVar();
+
+					// $$var = {$convert: {input:"$auctionId", to:"objectId", onError:null, onNull:null}}
+					Document toObjectIdExpr = new Document(
+						"$convert",
+						new Document( "input", "$" + leftFieldPath )
+							.append( "to", "objectId" )
+							.append( "onError", null )
+							.append( "onNull", null )
+					);
+
+					letDoc.put( var, toObjectIdExpr );
+
+					// 기존 addConditionExpr 로직 재사용: $eq: ["$_id", "$$v0"] 형태로 들어감
+					addConditionExpr( cond, "$$" + var, rightFieldPath, null, null, null );
+					return this;
+
+				}
+
 				/** between(low, high) 상수 범위 */
 				public Builder bindConditionBetween(
 					Object lowInclusive, Object highInclusive, String rightFieldPath
@@ -2242,29 +2744,112 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			public FieldBuilder<S> and() {
+			public FieldBuilder<S> and(
+				Consumer<FieldBuilder<S>> block
+			) {
 
 				criteriaStack.push( new CriteriaGroup( LogicalOperator.AND ) );
+
+				try {
+					block.accept( this );
+
+				} finally {
+					endOperator();
+
+				} // 자동 닫기
+
 				return this;
 
 			}
 
-			public FieldBuilder<S> or() {
+
+			public FieldBuilder<S> or(
+				Consumer<FieldBuilder<S>> block
+			) {
 
 				criteriaStack.push( new CriteriaGroup( LogicalOperator.OR ) );
+
+				try {
+					block.accept( this );
+
+				} finally {
+					endOperator();
+
+				} // 자동 닫기
+
 				return this;
 
 			}
 
-			public FieldBuilder<S> nor() {
+			public FieldBuilder<S> not(
+				Consumer<FieldBuilder<S>> block
+			) {
 
 				criteriaStack.push( new CriteriaGroup( LogicalOperator.NOR ) );
+
+				try {
+					and( block );
+
+				} finally {
+					endOperator();
+
+				}
+
 				return this;
 
 			}
 
+			// NOT(OR(...))
+			public FieldBuilder<S> notAny(
+				Consumer<FieldBuilder<S>> block
+			) {
+
+				criteriaStack.push( new CriteriaGroup( LogicalOperator.NOR ) );
+
+				try {
+					block.accept( this );
+
+				} finally {
+					endOperator();
+
+				}
+
+				return this;
+
+			}
+
+			// NOT(AND(...))
+			public FieldBuilder<S> notAll(
+				Consumer<FieldBuilder<S>> block
+			) {
+
+				return not( block );
+
+			}
+
+			// public FieldBuilder<S> and() {
+			//
+			// criteriaStack.push( new CriteriaGroup( LogicalOperator.AND ) );
+			// return this;
+			//
+			// }
+			//
+			// public FieldBuilder<S> or() {
+			//
+			// criteriaStack.push( new CriteriaGroup( LogicalOperator.OR ) );
+			// return this;
+			//
+			// }
+			//
+			// public FieldBuilder<S> nor() {
+			//
+			// criteriaStack.push( new CriteriaGroup( LogicalOperator.NOR ) );
+			// return this;
+			//
+			// }
+
 			// 현재 그룹 종료 및 상위 그룹에 추가
-			public FieldBuilder<S> endOperator() {
+			private FieldBuilder<S> endOperator() {
 
 				if (criteriaStack.size() <= 1) { return this; }
 
@@ -2391,6 +2976,13 @@ public class MongoQueryBuilder<K> {
 			public ExistsQueryBuilder exists() {
 
 				return new ExistsQueryBuilder();
+
+			}
+
+			// 원자적 update 빌더
+			public AtomicUpdateQueryBuilder atomicUpdate() {
+
+				return new AtomicUpdateQueryBuilder();
 
 			}
 
@@ -2864,7 +3456,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			public <R2  > Flux<ResultTuple<S, List<R2>>> executeLookup(
+			public <R2> Flux<ResultTuple<S, List<R2>>> executeLookup(
 				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
@@ -3153,7 +3745,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			public <R2  > Mono<ResultTuple<S, R2>> executeLookup(
+			public <R2> Mono<ResultTuple<S, R2>> executeLookup(
 				AbstractQueryBuilder<R2, ?>.FindQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
@@ -3486,7 +4078,7 @@ public class MongoQueryBuilder<K> {
 
 		public class CountQueryBuilder extends QueryBuilderAccesser {
 
-			public <R2  > Mono<ResultTuple<Long, Long>> executeLookup(
+			public <R2> Mono<ResultTuple<Long, Long>> executeLookup(
 				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
@@ -3800,7 +4392,7 @@ public class MongoQueryBuilder<K> {
 
 		public class ExistsQueryBuilder extends QueryBuilderAccesser {
 
-			public <R2  > Mono<ResultTuple<Boolean, Boolean>> executeLookup(
+			public <R2> Mono<ResultTuple<Boolean, Boolean>> executeLookup(
 				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
@@ -4013,6 +4605,197 @@ public class MongoQueryBuilder<K> {
 
 		}
 
+
+		public class AtomicUpdateQueryBuilder {
+
+			private final Update update = new Update();
+
+			// 기본은 안전하게 updateFirst(= 1건)로
+			private boolean multi = false;
+
+			private boolean upsert = false;
+
+			/** 여러 건 업데이트로 변경 (updateMulti) */
+			public AtomicUpdateQueryBuilder multi() {
+
+				this.multi = true;
+				return this;
+
+			}
+
+			/** 단건 업데이트로 변경 (updateFirst) */
+			public AtomicUpdateQueryBuilder first() {
+
+				this.multi = false;
+				return this;
+
+			}
+
+			/** upsert로 실행 */
+			public AtomicUpdateQueryBuilder upsert() {
+
+				this.upsert = true;
+				return this;
+
+			}
+
+			// --------------------
+			// update operators
+			// --------------------
+
+			private String requireField(
+				String field
+			) {
+
+				if (field == null || field.isBlank()) { throw new IllegalArgumentException( "field must not be null/blank" ); }
+
+				return field;
+
+			}
+
+			public AtomicUpdateQueryBuilder inc(
+				String field, Number delta
+			) {
+
+				update.inc( requireField( field ), delta );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder inc(
+				Enum<?> field, Number delta
+			) {
+
+				return inc( field.name(), delta );
+
+			}
+
+			public AtomicUpdateQueryBuilder set(
+				String field, Object value
+			) {
+
+				update.set( requireField( field ), value );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder set(
+				Enum<?> field, Object value
+			) {
+
+				return set( field.name(), value );
+
+			}
+
+			public AtomicUpdateQueryBuilder setOnInsert(
+				String field, Object value
+			) {
+
+				update.setOnInsert( requireField( field ), value );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder setOnInsert(
+				Enum<?> field, Object value
+			) {
+
+				return setOnInsert( field.name(), value );
+
+			}
+
+			public AtomicUpdateQueryBuilder unset(
+				String field
+			) {
+
+				update.unset( requireField( field ) );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder unset(
+				Enum<?> field
+			) {
+
+				return unset( field.name() );
+
+			}
+
+			public AtomicUpdateQueryBuilder push(
+				String field, Object value
+			) {
+
+				update.push( requireField( field ), value );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder addToSet(
+				String field, Object value
+			) {
+
+				update.addToSet( requireField( field ), value );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder pull(
+				String field, Object value
+			) {
+
+				update.pull( requireField( field ), value );
+				return this;
+
+			}
+
+			/** 실제 실행 */
+			public Mono<UpdateResult> execute() {
+
+				// update 연산이 하나도 없으면 실수 방지
+				if (update.getUpdateObject() == null || update.getUpdateObject().isEmpty()) { return Mono.error( new IllegalStateException( "No update operation specified (e.g. inc/set/unset)." ) ); }
+
+				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
+					Query query = new Query();
+					criteriaOptional.ifPresent( query::addCriteria );
+					return query;
+
+				} );
+
+				return Mono
+					.zip( executeClassMono, queryMono )
+					.flatMap( tuple -> {
+						Class<E> entityClass = tuple.getT1();
+						Query query = tuple.getT2();
+
+						// collectionName 지정 여부에 따라 분기
+						if (collectionName != null && ! collectionName.isBlank()) {
+							if (upsert)
+								return reactiveMongoTemplate.upsert( query, update, entityClass, collectionName );
+							if (multi)
+								return reactiveMongoTemplate.updateMulti( query, update, entityClass, collectionName );
+							return reactiveMongoTemplate.updateFirst( query, update, entityClass, collectionName );
+
+						}
+
+						if (upsert)
+							return reactiveMongoTemplate.upsert( query, update, entityClass );
+						if (multi)
+							return reactiveMongoTemplate.updateMulti( query, update, entityClass );
+						return reactiveMongoTemplate.updateFirst( query, update, entityClass );
+
+					} );
+
+			}
+
+			/** 자주 쓰면 편의 메서드 */
+			public Mono<Long> executeModifiedCount() {
+
+				return execute().map( UpdateResult::getModifiedCount );
+
+			}
+
+		}
+
 	}
 
 
@@ -4033,6 +4816,7 @@ public class MongoQueryBuilder<K> {
 		}
 
 	}
+
 
 	public class ExecuteEntityBuilder<E> extends AbstractQueryBuilder<E, ExecuteEntityBuilder<E>> implements ExecuteBuilder {
 
@@ -4065,6 +4849,7 @@ public class MongoQueryBuilder<K> {
 		}
 
 	}
+
 
 	public class ExecuteCustomClassBuilder<E> extends AbstractQueryBuilder<E, ExecuteCustomClassBuilder<E>> implements ExecuteBuilder {
 
@@ -4106,6 +4891,7 @@ public class MongoQueryBuilder<K> {
 	) {
 
 		return new ExecuteRepositoryBuilder<>( key, repositoryClass );
+
 	}
 
 	public <E> ExecuteEntityBuilder<E> executeEntity(
@@ -4113,6 +4899,7 @@ public class MongoQueryBuilder<K> {
 	) {
 
 		return new ExecuteEntityBuilder<>( key );
+
 	}
 
 	public <E> ExecuteEntityBuilder<E> executeEntity(
@@ -4120,6 +4907,7 @@ public class MongoQueryBuilder<K> {
 	) {
 
 		return new ExecuteEntityBuilder<>( executeEntity, key );
+
 	}
 
 	public <E> ExecuteCustomClassBuilder<E> executeCustomClass(
@@ -4127,6 +4915,7 @@ public class MongoQueryBuilder<K> {
 	) {
 
 		return new ExecuteCustomClassBuilder<>( executeCustomClass, key, collectionName );
+
 	}
 
 	public <E> ExecuteCustomClassBuilder<E> executeCustomClass(
@@ -4134,6 +4923,7 @@ public class MongoQueryBuilder<K> {
 	) {
 
 		return new ExecuteCustomClassBuilder<>( key, collectionName );
+
 	}
 
 
@@ -4513,6 +5303,7 @@ public class MongoQueryBuilder<K> {
 					.filter( Objects::nonNull ),
 				totalCount
 			);
+
 		}
 
 		/** data 스트림을 필터링 (totalCount는 원본 값을 그대로 유지) */
@@ -4625,5 +5416,7 @@ public class MongoQueryBuilder<K> {
 				.map( t -> new PageResult<>( t.getT1(), t.getT2() ) );
 
 		}
+
 	}
+
 }

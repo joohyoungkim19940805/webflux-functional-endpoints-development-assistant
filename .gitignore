@@ -9,6 +9,7 @@ hs_err_pid*
 replay_pid*
 
 ### Gradle / 빌드 결과물 ###
+build/
 /build/
 /out/
 /bin/
