@@ -37,6 +37,7 @@ import org.springframework.data.mongodb.core.ReactiveMongoTemplate;
 import org.springframework.data.mongodb.core.aggregation.Aggregation;
 import org.springframework.data.mongodb.core.aggregation.AggregationOperation;
 import org.springframework.data.mongodb.core.aggregation.AggregationOptions;
+import org.springframework.data.mongodb.core.aggregation.AggregationUpdate;
 import org.springframework.data.mongodb.core.aggregation.FacetOperation;
 import org.springframework.data.mongodb.core.aggregation.ProjectionOperation;
 import org.springframework.data.mongodb.core.mapping.MongoMappingContext;
@@ -46,11 +47,20 @@ import org.springframework.data.mongodb.core.query.BasicUpdate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.data.mongodb.core.query.UpdateDefinition;
 import org.springframework.data.repository.reactive.ReactiveCrudRepository;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import com.byeolnaerim.mongodb.FieldsPair.Condition;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.ExecuteBuilder;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.LookupSpec;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.CountAggregation;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.CountExecute;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.ExistsAggregation;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.ExistsExecute;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.FindAggregation;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.FindAllAggregation;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.FindAllExecute;
+import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.FindExecute;
 import com.mongodb.ReadPreference;
 import com.mongodb.bulk.BulkWriteResult;
 import com.mongodb.client.result.DeleteResult;
@@ -602,65 +612,6 @@ public class MongoQueryBuilder<K> {
 		protected FieldBuilder<E> fieldBuilder = new FieldBuilder<>( LogicalOperator.AND );
 
 		protected AbstractQueryBuilder<E, T> executeBuilder;
-
-		protected ReadPreference readPreference = null;
-
-		protected boolean isAllowDiskUse = false;
-
-		public AbstractQueryBuilder<E, T> readPreference(
-			ReadPreference rp
-		) {
-
-			this.readPreference = rp;
-			return this;
-
-		}
-
-		public AbstractQueryBuilder<E, T> isAllowDiskUse(
-			Boolean allow
-		) {
-
-			this.isAllowDiskUse = allow == null ? false : allow;
-			return this;
-
-		}
-
-		protected Aggregation applyAggOptions(
-			Aggregation agg
-		) {
-
-			if (readPreference != null || isAllowDiskUse) {
-				return agg
-					.withOptions(
-						AggregationOptions
-							.builder()
-							.allowDiskUse( isAllowDiskUse )
-							.readPreference( readPreference ) // null이면 무시됨
-							.build()
-					);
-
-			}
-
-			return agg
-				.withOptions(
-					Aggregation
-						.newAggregationOptions()
-						.allowDiskUse( isAllowDiskUse )
-						.build()
-				);
-
-		}
-
-		// 🔹 공통 헬퍼: Query 옵션 적용
-		protected Query applyQueryOptions(
-			Query q
-		) {
-
-			if (readPreference != null)
-				q.withReadPreference( readPreference );
-			return q;
-
-		}
 
 		public Mono<E> save(
 			E e
@@ -1731,15 +1682,18 @@ public class MongoQueryBuilder<K> {
 
 			private Function<Document, V> valueConverter;
 
+			private final QueryBuilderAccesser accessor;
+
 			@SuppressWarnings("unchecked")
 			public Grouping(
 							Class<KK> k,
-							Class<V> v
+							Class<V> v,
+							QueryBuilderAccesser accessor
 			) {
 
 				this.keyType = k;
 				this.valueType = v;
-
+				this.accessor = Objects.requireNonNull( accessor, "accessor" );
 				this.keyConverter = (Document kk) -> {
 					Object key = kk.get( "_id" );
 
@@ -2031,7 +1985,7 @@ public class MongoQueryBuilder<K> {
 								groupBody.append( as, accumulators.get( as ) );
 							opList.add( ctx -> new Document( "$group", groupBody ) );
 
-							Aggregation agg = applyAggOptions( Aggregation.newAggregation( opList ) );
+							Aggregation agg = accessor.applyAggOptions( Aggregation.newAggregation( opList ) );
 
 							Flux<Document> flux = (collectionName != null && ! collectionName.isBlank())
 								? reactiveMongoTemplate.aggregate( agg, leftColl, Document.class )
@@ -2654,14 +2608,100 @@ public class MongoQueryBuilder<K> {
 		}
 
 
-		protected class QueryBuilderAccesser {
+		protected abstract class QueryBuilderAccesser<Q, A> {
 
+			protected ReadPreference readPreference = null;
+
+			protected Boolean isAllowDiskUse = null;
+
+			protected Consumer<Query> queryCustomizer = q -> {};
+
+			protected Consumer<AggregationOptions.Builder> aggOptionsCustomizer = b -> {};
+
+			public interface Runner {}
+
+			@SuppressWarnings("unchecked")
+			public final Q customizeQuery(
+				Consumer<Query> c
+			) {
+
+				if (c != null)
+					this.queryCustomizer = this.queryCustomizer.andThen( c );
+				return (Q) this;
+
+			}
+
+			@SuppressWarnings("unchecked")
+			public final A customizeAggregation(
+				Consumer<AggregationOptions.Builder> c
+			) {
+
+				if (c != null)
+					this.aggOptionsCustomizer = this.aggOptionsCustomizer.andThen( c );
+				return (A) this;
+
+			}
+
+
+			public QueryBuilderAccesser<Q, A> readPreference(
+				ReadPreference rp
+			) {
+
+				this.readPreference = rp;
+				return this;
+
+			}
+
+			public QueryBuilderAccesser<Q, A> isAllowDiskUse(
+				Boolean allow
+			) {
+
+				this.isAllowDiskUse = allow;
+				return this;
+
+			}
+
+			protected Aggregation applyAggOptions(
+				Aggregation agg
+			) {
+
+				AggregationOptions.Builder b = AggregationOptions.builder();
+
+				if (isAllowDiskUse != null)
+					b.allowDiskUse( isAllowDiskUse );
+				if (readPreference != null)
+					b.readPreference( readPreference );
+
+				aggOptionsCustomizer.accept( b );
+
+				return agg.withOptions( b.build() );
+
+			}
+
+
+			protected Query applyQueryOptions(
+				Query q
+			) {
+
+				if (readPreference != null)
+					q.withReadPreference( readPreference );
+
+				if (isAllowDiskUse != null) {
+					q.allowDiskUse( isAllowDiskUse );
+
+					// 또는 query.diskUse(isAllowDiskUse ? DiskUse.ALLOW : DiskUse.DISALLOW);
+				}
+
+				queryCustomizer.accept( q );
+				return q;
+
+			}
 
 			public <KK, V> Grouping<KK, V> group(
 				Class<KK> k, Class<V> v
 			) {
 
-				return new Grouping<KK, V>( k, v ) {};
+				return new Grouping<KK, V>( k, v, this ) {};
 
 			}
 
@@ -2687,6 +2727,82 @@ public class MongoQueryBuilder<K> {
 			protected String getCollectionName() { return collectionName; }
 
 			protected Mono<Optional<Criteria>> getFieldBuilderCriteria() { return fieldBuilder.buildCriteria(); }
+
+
+			public interface FindAllExecute<E> extends Runner {
+
+				Flux<E> execute();
+
+			}
+
+			public interface FindAllAggregation<E> extends Runner {
+
+				Mono<PageResult<E>> executeAggregation();
+
+				<R2> Flux<ResultTuple<E, List<R2>>> executeLookup(
+					AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+				);
+
+				<R2> Mono<PageResult<ResultTuple<E, List<R2>>>> executeLookupAndCount(
+					AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+				);
+
+			}
+
+			public interface FindExecute<E> extends Runner {
+
+				Mono<E> execute();
+
+				Mono<E> executeFirst();
+
+			}
+
+			public interface FindAggregation<E> extends Runner {
+
+				Mono<E> executeAggregation();
+
+				<R2> Mono<ResultTuple<E, R2>> executeLookup(
+					AbstractQueryBuilder<R2, ?>.FindQueryBuilder<R2> rightBuilder, LookupSpec spec
+				);
+
+
+			}
+
+			public interface CountExecute<E> extends Runner {
+
+				Mono<Long> execute();
+
+
+			}
+
+			public interface CountAggregation<E> extends Runner {
+
+				Mono<Long> executeAggregation();
+
+				<R2> Mono<ResultTuple<Long, Long>> executeLookup(
+					AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+				);
+
+
+			}
+
+			public interface ExistsExecute<E> extends Runner {
+
+				Mono<Boolean> execute();
+
+
+			}
+
+			public interface ExistsAggregation<E> extends Runner {
+
+				Mono<Boolean> executeAggregation();
+
+				<R2> Mono<ResultTuple<Boolean, Boolean>> executeLookup(
+					AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+				);
+
+
+			}
 
 		}
 
@@ -2986,9 +3102,10 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+
 		}
 
-		public class FindAllQueryBuilder<S extends E> extends QueryBuilderAccesser {
+		public class FindAllQueryBuilder<S extends E> extends QueryBuilderAccesser<FindAllExecute<E>, FindAllAggregation<E>> implements FindAllExecute<E>, FindAllAggregation<E> {
 
 
 			private Paging paging;
@@ -3118,6 +3235,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+			@Override
 			public Mono<PageResult<E>> executeAggregation() {
 
 				// fieldBuilder.buildCriteria()는 Mono<Optional<Criteria>>를 반환한다고 가정합니다.
@@ -3222,7 +3340,8 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			public <R2> Mono<PageResult<ResultTuple<S, List<R2>>>> executeLookupAndCount(
+			@Override
+			public <R2> Mono<PageResult<ResultTuple<E, List<R2>>>> executeLookupAndCount(
 				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
@@ -3404,9 +3523,9 @@ public class MongoQueryBuilder<K> {
 							List<Document> dataArr = (List<Document>) facetDoc.getOrDefault( "data", List.of() );
 
 							// data 매핑
-							List<ResultTuple<S, List<R2>>> data = dataArr.stream().map( d -> {
+							List<ResultTuple<E, List<R2>>> data = dataArr.stream().map( d -> {
 								@SuppressWarnings("unchecked")
-								S leftVal = (S) reactiveMongoTemplate.getConverter().read( leftClass, (Document) d.get( leftKey ) );
+								E leftVal = (E) reactiveMongoTemplate.getConverter().read( leftClass, (Document) d.get( leftKey ) );
 
 								Object rawRight = d.get( rightKey );
 								List<R2> rightVal;
@@ -3456,7 +3575,8 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			public <R2> Flux<ResultTuple<S, List<R2>>> executeLookup(
+			@Override
+			public <R2> Flux<ResultTuple<E, List<R2>>> executeLookup(
 				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
@@ -3645,7 +3765,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-
+			@Override
 			public Flux<E> execute() {
 
 				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
@@ -3701,7 +3821,7 @@ public class MongoQueryBuilder<K> {
 
 		}
 
-		public class FindQueryBuilder<S extends E> extends QueryBuilderAccesser {
+		public class FindQueryBuilder<S extends E> extends QueryBuilderAccesser<FindExecute<E>, FindAggregation<E>> implements FindExecute<E>, FindAggregation<E> {
 
 			private Sort sort = Sort.unsorted();
 
@@ -3745,7 +3865,8 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			public <R2> Mono<ResultTuple<S, R2>> executeLookup(
+			@Override
+			public <R2> Mono<ResultTuple<E, R2>> executeLookup(
 				AbstractQueryBuilder<R2, ?>.FindQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
@@ -3931,6 +4052,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+			@Override
 			public Mono<E> execute() {
 
 				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
@@ -3975,6 +4097,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+			@Override
 			public Mono<E> executeFirst() {
 
 				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
@@ -4023,6 +4146,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+			@Override
 			public Mono<E> executeAggregation() {
 
 				Mono<Aggregation> aggregationMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
@@ -4076,8 +4200,10 @@ public class MongoQueryBuilder<K> {
 
 		}
 
-		public class CountQueryBuilder extends QueryBuilderAccesser {
+		public class CountQueryBuilder extends QueryBuilderAccesser<CountExecute<E>, CountAggregation<E>> implements CountExecute<E>, CountAggregation<E> {
 
+
+			@Override
 			public <R2> Mono<ResultTuple<Long, Long>> executeLookup(
 				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
@@ -4283,6 +4409,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+			@Override
 			public Mono<Long> execute() {
 
 				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
@@ -4315,6 +4442,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+			@Override
 			public Mono<Long> executeAggregation() {
 
 				Mono<Aggregation> aggMono = fieldBuilder.buildCriteria().map( criteriaOpt -> {
@@ -4390,8 +4518,9 @@ public class MongoQueryBuilder<K> {
 
 		}
 
-		public class ExistsQueryBuilder extends QueryBuilderAccesser {
+		public class ExistsQueryBuilder extends QueryBuilderAccesser<ExistsExecute<E>, ExistsAggregation<E>> implements ExistsExecute<E>, ExistsAggregation<E> {
 
+			@Override
 			public <R2> Mono<ResultTuple<Boolean, Boolean>> executeLookup(
 				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
@@ -4572,6 +4701,7 @@ public class MongoQueryBuilder<K> {
 
 			}
 
+			@Override
 			public Mono<Boolean> execute() {
 
 				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
@@ -4603,19 +4733,47 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-		}
+			@Override
+			public Mono<Boolean> executeAggregation() {
 
+				Mono<Aggregation> aggMono = fieldBuilder.buildCriteria().map( criteriaOpt -> {
+					List<AggregationOperation> ops = new ArrayList<>();
+					criteriaOpt.ifPresent( c -> ops.add( Aggregation.match( c ) ) );
+					ops.add( Aggregation.limit( 1 ) ); // 한 건만 있으면 true
+					Aggregation agg = applyAggOptions( Aggregation.newAggregation( ops ) );
+					return agg;
+
+				} );
+
+				return Mono
+					.zip( executeClassMono, aggMono )
+					.flatMap( tp -> {
+						Class<E> entityClass = tp.getT1();
+						Aggregation agg = tp.getT2();
+
+						Flux<Document> docs = (collectionName != null && ! collectionName.isBlank())
+							? reactiveMongoTemplate.aggregate( agg, collectionName, Document.class )
+							: reactiveMongoTemplate.aggregate( agg, entityClass, Document.class );
+
+						return docs.hasElements(); // 있으면 true
+
+					} );
+
+			}
+
+		}
 
 		public class AtomicUpdateQueryBuilder {
 
-			private final Update update = new Update();
-
-			// 기본은 안전하게 updateFirst(= 1건)로
 			private boolean multi = false;
 
 			private boolean upsert = false;
 
-			/** 여러 건 업데이트로 변경 (updateMulti) */
+			private final DocumentSpec doc = new DocumentSpec();
+
+			private final PipelineSpec pipe = new PipelineSpec();
+
+			// 공통 옵션
 			public AtomicUpdateQueryBuilder multi() {
 
 				this.multi = true;
@@ -4623,7 +4781,6 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			/** 단건 업데이트로 변경 (updateFirst) */
 			public AtomicUpdateQueryBuilder first() {
 
 				this.multi = false;
@@ -4631,7 +4788,6 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			/** upsert로 실행 */
 			public AtomicUpdateQueryBuilder upsert() {
 
 				this.upsert = true;
@@ -4639,34 +4795,15 @@ public class MongoQueryBuilder<K> {
 
 			}
 
-			// --------------------
-			// update operators
-			// --------------------
-
-			private String requireField(
-				String field
-			) {
-
-				if (field == null || field.isBlank()) { throw new IllegalArgumentException( "field must not be null/blank" ); }
-
-				return field;
-
-			}
-
+			// -------------------------
+			// Document(Update) 연산들
+			// -------------------------
 			public AtomicUpdateQueryBuilder inc(
 				String field, Number delta
 			) {
 
-				update.inc( requireField( field ), delta );
+				doc.inc( field, delta );
 				return this;
-
-			}
-
-			public AtomicUpdateQueryBuilder inc(
-				Enum<?> field, Number delta
-			) {
-
-				return inc( field.name(), delta );
 
 			}
 
@@ -4674,16 +4811,8 @@ public class MongoQueryBuilder<K> {
 				String field, Object value
 			) {
 
-				update.set( requireField( field ), value );
+				doc.set( field, value );
 				return this;
-
-			}
-
-			public AtomicUpdateQueryBuilder set(
-				Enum<?> field, Object value
-			) {
-
-				return set( field.name(), value );
 
 			}
 
@@ -4691,16 +4820,8 @@ public class MongoQueryBuilder<K> {
 				String field, Object value
 			) {
 
-				update.setOnInsert( requireField( field ), value );
+				doc.setOnInsert( field, value );
 				return this;
-
-			}
-
-			public AtomicUpdateQueryBuilder setOnInsert(
-				Enum<?> field, Object value
-			) {
-
-				return setOnInsert( field.name(), value );
 
 			}
 
@@ -4708,16 +4829,8 @@ public class MongoQueryBuilder<K> {
 				String field
 			) {
 
-				update.unset( requireField( field ) );
+				doc.unset( field );
 				return this;
-
-			}
-
-			public AtomicUpdateQueryBuilder unset(
-				Enum<?> field
-			) {
-
-				return unset( field.name() );
 
 			}
 
@@ -4725,7 +4838,7 @@ public class MongoQueryBuilder<K> {
 				String field, Object value
 			) {
 
-				update.push( requireField( field ), value );
+				doc.push( field, value );
 				return this;
 
 			}
@@ -4734,7 +4847,7 @@ public class MongoQueryBuilder<K> {
 				String field, Object value
 			) {
 
-				update.addToSet( requireField( field ), value );
+				doc.addToSet( field, value );
 				return this;
 
 			}
@@ -4743,58 +4856,283 @@ public class MongoQueryBuilder<K> {
 				String field, Object value
 			) {
 
-				update.pull( requireField( field ), value );
+				doc.pull( field, value );
 				return this;
 
 			}
 
-			/** 실제 실행 */
+			// -------------------------
+			// Pipeline(AggregationUpdate) 연산들
+			// (이름을 구분하거나, pipelineXXX로 두는게 안전)
+			// -------------------------
+			public AtomicUpdateQueryBuilder pipelineSet(
+				String field, Object valueOrExpr
+			) {
+
+				pipe.set( field, valueOrExpr );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder pipelineInc(
+				String field, Number delta
+			) {
+
+				pipe.inc( field, delta );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder pipelineUnset(
+				String... fields
+			) {
+
+				pipe.unset( fields );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder stage(
+				Document stage
+			) {
+
+				pipe.stage( stage );
+				return this;
+
+			}
+
+			public AtomicUpdateQueryBuilder nextStage() {
+
+				pipe.nextStage();
+				return this;
+
+			}
+
+			// -------------------------
+			// execute 분기
+			// -------------------------
 			public Mono<UpdateResult> execute() {
 
-				// update 연산이 하나도 없으면 실수 방지
-				if (update.getUpdateObject() == null || update.getUpdateObject().isEmpty()) { return Mono.error( new IllegalStateException( "No update operation specified (e.g. inc/set/unset)." ) ); }
+				UpdateDefinition ud = doc.build();
+				if (doc.isEmpty())
+					return Mono.error( new IllegalStateException( "No document update specified." ) );
+				return doExecute( ud );
 
-				var queryMono = fieldBuilder.buildCriteria().map( criteriaOptional -> {
-					Query query = new Query();
-					criteriaOptional.ifPresent( query::addCriteria );
-					return query;
+			}
+
+			public Mono<UpdateResult> executeAggregation() {
+
+				UpdateDefinition ud = pipe.build();
+				if (pipe.isEmpty())
+					return Mono.error( new IllegalStateException( "No pipeline update specified." ) );
+				return doExecute( ud );
+
+			}
+
+			private Mono<UpdateResult> doExecute(
+				UpdateDefinition updateDef
+			) {
+
+				Mono<Query> queryMono = fieldBuilder.buildCriteria().map( opt -> {
+					Query q = new Query();
+					opt.ifPresent( q::addCriteria );
+					// applyQueryOptions( q );
+					return q;
 
 				} );
 
 				return Mono
 					.zip( executeClassMono, queryMono )
-					.flatMap( tuple -> {
-						Class<E> entityClass = tuple.getT1();
-						Query query = tuple.getT2();
+					.flatMap( tp -> {
+						Class<E> entityClass = tp.getT1();
+						Query query = tp.getT2();
 
-						// collectionName 지정 여부에 따라 분기
-						if (collectionName != null && ! collectionName.isBlank()) {
+						boolean hasCollection = (collectionName != null && ! collectionName.isBlank());
+
+						if (hasCollection) {
 							if (upsert)
-								return reactiveMongoTemplate.upsert( query, update, entityClass, collectionName );
+								return reactiveMongoTemplate.upsert( query, updateDef, entityClass, collectionName );
 							if (multi)
-								return reactiveMongoTemplate.updateMulti( query, update, entityClass, collectionName );
-							return reactiveMongoTemplate.updateFirst( query, update, entityClass, collectionName );
+								return reactiveMongoTemplate.updateMulti( query, updateDef, entityClass, collectionName );
+							return reactiveMongoTemplate.updateFirst( query, updateDef, entityClass, collectionName );
+
+						} else {
+							if (upsert)
+								return reactiveMongoTemplate.upsert( query, updateDef, entityClass );
+							if (multi)
+								return reactiveMongoTemplate.updateMulti( query, updateDef, entityClass );
+							return reactiveMongoTemplate.updateFirst( query, updateDef, entityClass );
 
 						}
-
-						if (upsert)
-							return reactiveMongoTemplate.upsert( query, update, entityClass );
-						if (multi)
-							return reactiveMongoTemplate.updateMulti( query, update, entityClass );
-						return reactiveMongoTemplate.updateFirst( query, update, entityClass );
 
 					} );
 
 			}
 
-			/** 자주 쓰면 편의 메서드 */
-			public Mono<Long> executeModifiedCount() {
+			// -------------------------
+			// 내부 Spec
+			// -------------------------
+			private class DocumentSpec {
 
-				return execute().map( UpdateResult::getModifiedCount );
+				private final Update update = new Update();
+
+				void inc(
+					String f, Number d
+				) {
+
+					update.inc( requireField( f ), d );
+
+				}
+
+				void set(
+					String f, Object v
+				) {
+
+					update.set( requireField( f ), v );
+
+				}
+
+				void setOnInsert(
+					String f, Object v
+				) {
+
+					update.setOnInsert( requireField( f ), v );
+
+				}
+
+				void unset(
+					String f
+				) {
+
+					update.unset( requireField( f ) );
+
+				}
+
+				void push(
+					String f, Object v
+				) {
+
+					update.push( requireField( f ), v );
+
+				}
+
+				void addToSet(
+					String f, Object v
+				) {
+
+					update.addToSet( requireField( f ), v );
+
+				}
+
+				void pull(
+					String f, Object v
+				) {
+
+					update.pull( requireField( f ), v );
+
+				}
+
+				UpdateDefinition build() {
+
+					return update;
+
+				}
+
+				boolean isEmpty() { return update.getUpdateObject() == null || update.getUpdateObject().isEmpty(); }
+
+			}
+
+			private class PipelineSpec {
+
+				private final List<AggregationOperation> pipeline = new ArrayList<>();
+
+				private Document pendingSet = new Document();
+
+				void set(
+					String f, Object vOrExpr
+				) {
+
+					pendingSet.put( requireField( f ), vOrExpr );
+
+				}
+
+				void inc(
+					String f, Number d
+				) {
+
+					String ff = requireField( f );
+					Document expr = new Document( "$add", List.of( new Document( "$ifNull", List.of( "$" + ff, 0 ) ), d ) );
+					set( ff, expr );
+
+				}
+
+				void unset(
+					String... fields
+				) {
+
+					flushSet();
+					List<String> keys = Arrays.stream( fields ).filter( Objects::nonNull ).map( String::trim ).filter( s -> ! s.isBlank() ).toList();
+					if (! keys.isEmpty())
+						pipeline.add( ctx -> new Document( "$unset", keys ) );
+
+				}
+
+				void stage(
+					Document st
+				) {
+
+					flushSet();
+					if (st != null && ! st.isEmpty())
+						pipeline.add( ctx -> new Document( st ) );
+
+				}
+
+				void nextStage() {
+
+					flushSet();
+
+				}
+
+				UpdateDefinition build() {
+
+					flushSet();
+					return AggregationUpdate.from( pipeline );
+
+				}
+
+				boolean isEmpty() {
+
+					flushSet();
+					return pipeline.isEmpty();
+
+				}
+
+				private void flushSet() {
+
+					if (pendingSet != null && ! pendingSet.isEmpty()) {
+						Document st = new Document( "$set", new Document( pendingSet ) );
+						pipeline.add( ctx -> st );
+						pendingSet = new Document();
+
+					}
+
+				}
+
+			}
+
+			private String requireField(
+				String field
+			) {
+
+				if (field == null || field.isBlank())
+					throw new IllegalArgumentException( "field must not be null/blank" );
+				return field;
 
 			}
 
 		}
+
+
 
 	}
 
