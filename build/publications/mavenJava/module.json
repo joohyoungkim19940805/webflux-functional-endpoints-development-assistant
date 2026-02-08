@@ -41,11 +41,11 @@
         {
           "name": "webflux-fe-dev-assistant-0.0.1-SNAPSHOT.jar",
           "url": "webflux-fe-dev-assistant-0.0.1-SNAPSHOT.jar",
-          "size": 192215,
-          "sha512": "15720b34f429ef949232bb9f1121ad33bcd9c27fa6ba1d7c457760b6021533cd74e64ead38edba94cdd5b8f68b3ded5c50055ece142a4675269ea60abdec9c3d",
-          "sha256": "88ba04535895d5a9c316f607700e4a621b1a3f799c254cb51c5682d3ac06bc01",
-          "sha1": "24e745d756c1c97adac2497db223218c51a7ec4e",
-          "md5": "3817ac2088856d59efa0ce9739b655c3"
+          "size": 276929,
+          "sha512": "04a7edb27c2b4af6e866949a2339d1918dc9fb91dd712fc7c282a04fb94fbb3aacf4e03ba50ad916e22d104c69de9bb5733c4339fcf2cb84ad98c5b16b515123",
+          "sha256": "652d6943227119398ea8162560f8e3e14ad87b7ce9609ad3bfd8efdfe868c501",
+          "sha1": "bf0298cb9472427767e1e5ec2308aaf9ff82309b",
+          "md5": "a6576d2a95e4a6c04ed6d11be868a6b8"
         }
       ]
     },
@@ -101,11 +101,11 @@
         {
           "name": "webflux-fe-dev-assistant-0.0.1-SNAPSHOT.jar",
           "url": "webflux-fe-dev-assistant-0.0.1-SNAPSHOT.jar",
-          "size": 192215,
-          "sha512": "15720b34f429ef949232bb9f1121ad33bcd9c27fa6ba1d7c457760b6021533cd74e64ead38edba94cdd5b8f68b3ded5c50055ece142a4675269ea60abdec9c3d",
-          "sha256": "88ba04535895d5a9c316f607700e4a621b1a3f799c254cb51c5682d3ac06bc01",
-          "sha1": "24e745d756c1c97adac2497db223218c51a7ec4e",
-          "md5": "3817ac2088856d59efa0ce9739b655c3"
+          "size": 276929,
+          "sha512": "04a7edb27c2b4af6e866949a2339d1918dc9fb91dd712fc7c282a04fb94fbb3aacf4e03ba50ad916e22d104c69de9bb5733c4339fcf2cb84ad98c5b16b515123",
+          "sha256": "652d6943227119398ea8162560f8e3e14ad87b7ce9609ad3bfd8efdfe868c501",
+          "sha1": "bf0298cb9472427767e1e5ec2308aaf9ff82309b",
+          "md5": "a6576d2a95e4a6c04ed6d11be868a6b8"
         }
       ]
     }
