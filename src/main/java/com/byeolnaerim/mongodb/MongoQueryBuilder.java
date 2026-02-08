@@ -52,7 +52,6 @@ import org.springframework.data.repository.reactive.ReactiveCrudRepository;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import com.byeolnaerim.mongodb.FieldsPair.Condition;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.ExecuteBuilder;
-import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.LookupSpec;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.CountAggregation;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.CountExecute;
 import com.byeolnaerim.mongodb.MongoQueryBuilder.AbstractQueryBuilder.QueryBuilderAccesser.ExistsAggregation;
@@ -1881,7 +1880,7 @@ public class MongoQueryBuilder<K> {
 
 			/** lookup 포함 그룹 실행 */
 			public <R2> Mono<Map<KK, V>> executeLookup(
-				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+				MongoQueryBuilder<K>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
 				Objects.requireNonNull( rightBuilder, "rightBuilder is required" );
@@ -2009,12 +2008,12 @@ public class MongoQueryBuilder<K> {
 			// $lookup 컨텍스트 Helper
 			private class LookupCtx<R2> {
 
-				final AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder;
+				final MongoQueryBuilder<K>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder;
 
 				final LookupSpec spec;
 
 				LookupCtx(
-							AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rb,
+						MongoQueryBuilder<K>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rb,
 							LookupSpec sp
 				) {
 
@@ -2740,11 +2739,11 @@ public class MongoQueryBuilder<K> {
 				Mono<PageResult<E>> executeAggregation();
 
 				<R2> Flux<ResultTuple<E, List<R2>>> executeLookup(
-					AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+						MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 				);
 
 				<R2> Mono<PageResult<ResultTuple<E, List<R2>>>> executeLookupAndCount(
-					AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+						MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 				);
 
 			}
@@ -2762,7 +2761,7 @@ public class MongoQueryBuilder<K> {
 				Mono<E> executeAggregation();
 
 				<R2> Mono<ResultTuple<E, R2>> executeLookup(
-					AbstractQueryBuilder<R2, ?>.FindQueryBuilder<R2> rightBuilder, LookupSpec spec
+					MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindQueryBuilder<R2> rightBuilder, LookupSpec spec
 				);
 
 
@@ -2780,7 +2779,7 @@ public class MongoQueryBuilder<K> {
 				Mono<Long> executeAggregation();
 
 				<R2> Mono<ResultTuple<Long, Long>> executeLookup(
-					AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+						MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 				);
 
 
@@ -2798,7 +2797,7 @@ public class MongoQueryBuilder<K> {
 				Mono<Boolean> executeAggregation();
 
 				<R2> Mono<ResultTuple<Boolean, Boolean>> executeLookup(
-					AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+						MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 				);
 
 
@@ -3342,7 +3341,7 @@ public class MongoQueryBuilder<K> {
 
 			@Override
 			public <R2> Mono<PageResult<ResultTuple<E, List<R2>>>> executeLookupAndCount(
-				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+					MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
 				Mono<Class<E>> leftClassMono = executeClassMono;
@@ -3577,7 +3576,7 @@ public class MongoQueryBuilder<K> {
 
 			@Override
 			public <R2> Flux<ResultTuple<E, List<R2>>> executeLookup(
-				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+					MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
 				// 왼쪽/오른쪽 클래스, 컬렉션명 결정
@@ -3867,7 +3866,7 @@ public class MongoQueryBuilder<K> {
 
 			@Override
 			public <R2> Mono<ResultTuple<E, R2>> executeLookup(
-				AbstractQueryBuilder<R2, ?>.FindQueryBuilder<R2> rightBuilder, LookupSpec spec
+				MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
 				// 내부적으로 FindAll과 거의 동일하되, limit(1) 보장
@@ -4205,7 +4204,7 @@ public class MongoQueryBuilder<K> {
 
 			@Override
 			public <R2> Mono<ResultTuple<Long, Long>> executeLookup(
-				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+					MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
 				Mono<Class<E>> leftClassMono = executeClassMono;
@@ -4522,7 +4521,7 @@ public class MongoQueryBuilder<K> {
 
 			@Override
 			public <R2> Mono<ResultTuple<Boolean, Boolean>> executeLookup(
-				AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
+					MongoQueryBuilder<E>.AbstractQueryBuilder<R2, ?>.FindAllQueryBuilder<R2> rightBuilder, LookupSpec spec
 			) {
 
 				Mono<Class<E>> leftClassMono = executeClassMono;

@@ -3,25 +3,25 @@
   <groupId>com.byeolnaerim</groupId>
   <artifactId>webflux-fe-dev-assistant</artifactId>
   <versioning>
-    <lastUpdated>20251215182127</lastUpdated>
+    <lastUpdated>20260201064520</lastUpdated>
     <snapshot>
       <localCopy>true</localCopy>
     </snapshot>
     <snapshotVersions>
       <snapshotVersion>
-        <extension>module</extension>
-        <value>0.0.1-SNAPSHOT</value>
-        <updated>20251215182127</updated>
-      </snapshotVersion>
-      <snapshotVersion>
         <extension>jar</extension>
         <value>0.0.1-SNAPSHOT</value>
-        <updated>20251215182127</updated>
+        <updated>20260201064520</updated>
+      </snapshotVersion>
+      <snapshotVersion>
+        <extension>module</extension>
+        <value>0.0.1-SNAPSHOT</value>
+        <updated>20260201064520</updated>
       </snapshotVersion>
       <snapshotVersion>
         <extension>pom</extension>
         <value>0.0.1-SNAPSHOT</value>
-        <updated>20251215182127</updated>
+        <updated>20260201064520</updated>
       </snapshotVersion>
     </snapshotVersions>
   </versioning>
