@@ -5,7 +5,7 @@ plugins {
     id 'maven-publish'                              // 배포용
 }
 
-group = 'com.byeolnaerim'
+group = 'com.starbearing'
 version = '0.0.1-SNAPSHOT' //-alpha.1
 jar {
     archiveBaseName = 'webflux-fe-dev-assistant'
@@ -32,7 +32,6 @@ dependencyManagement {
     }
 }
 dependencies {    
-	api 'org.springframework.data:spring-data-mongodb'
 	api 'org.springframework:spring-webflux'
 	api 'io.projectreactor:reactor-core'
 	
@@ -44,7 +43,6 @@ dependencies {
     implementation 'fr.inria.gforge.spoon:spoon-core:11.2.1'
     
     testImplementation 'org.junit.jupiter:junit-jupiter:6.0.1'
-    testImplementation 'de.flapdoodle.embed:de.flapdoodle.embed.mongo:4.21.0'
     
     compileOnly 'org.jspecify:jspecify:1.0.0'
 }
