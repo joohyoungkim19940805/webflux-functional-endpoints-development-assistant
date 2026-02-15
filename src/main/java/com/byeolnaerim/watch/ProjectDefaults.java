@@ -1,6 +1,7 @@
 package com.byeolnaerim.watch;
 
 
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -44,23 +45,26 @@ public final class ProjectDefaults {
 
 	static {
 		Path projectRoot = detectProjectRoot();
+
 		SRC_MAIN_JAVA = projectRoot.resolve( "src/main/java" ).toString().replace( '\\', '/' );
 		SRC_MAIN_RESOURCES = projectRoot.resolve( "src/main/resources" ).toString().replace( '\\', '/' );
 
-		// basePackage 추정: 이 클래스 패키지에서 ".watch" 앞까지
-		String pkg = ProjectDefaults.class.getPackageName(); // ex) com.byeolnaerim.watch
-		String guessedBase = pkg;
-		int idx = pkg.indexOf( ".watch" );
-		if (idx > 0)
-			guessedBase = pkg.substring( 0, idx );
+		String guessedBase = detectBasePackage( projectRoot )
+			.orElseGet( () -> {
+				var url = ProjectDefaults.class.getProtectionDomain().getCodeSource().getLocation();
+				Path loc;
 
-		// 시스템 프로퍼티로 재정의 가능: -Dapp.basePackage=com.foo.bar
-		String override = System.getProperty( BASE_PACKAGE_OVERRIDE_PROP );
+				try {
+					loc = Paths.get( url.toURI() ).toAbsolutePath().normalize();
 
-		if (override != null && ! override.isBlank()) {
-			guessedBase = override.trim();
+				} catch (URISyntaxException e) {
+					return null;
 
-		}
+				}
+
+				return loc.toString();
+
+			} );
 
 		BASE_PACKAGE = guessedBase;
 
@@ -170,6 +174,133 @@ public final class ProjectDefaults {
 
 	}
 
+	private static Optional<String> detectBasePackage(
+		Path projectRoot
+	) {
+
+		// 0) override
+		String override = System.getProperty( BASE_PACKAGE_OVERRIDE_PROP );
+
+		if (override != null && ! override.isBlank()) { return Optional.of( override.trim() ); }
+
+		// 1) sun.java.command에서 main class
+		try {
+			String cmd = System.getProperty( "sun.java.command" );
+
+			if (cmd != null && ! cmd.isBlank() && ! cmd.startsWith( "-jar" )) {
+				String main = cmd.split( "\\s+" )[0];
+				Class<?> clazz = Class.forName( main );
+				String pkg = clazz.getPackageName();
+				if (pkg != null && ! pkg.isBlank())
+					return Optional.of( pkg );
+
+			}
+
+		} catch (Throwable ignore) {}
+
+		// 2) -jar 실행이면 manifest의 Main-Class 시도 (가능한 범위에서)
+		try {
+			// sun.java.command가 jar 경로인 경우가 많음
+			String cmd = System.getProperty( "sun.java.command" );
+
+			if (cmd != null && cmd.endsWith( ".jar" )) {
+				Path jar = Paths.get( cmd ).toAbsolutePath().normalize();
+
+				try (java.util.jar.JarFile jf = new java.util.jar.JarFile( jar.toFile() )) {
+					var mf = jf.getManifest();
+
+					if (mf != null) {
+						String mainClass = mf.getMainAttributes().getValue( "Main-Class" );
+
+						if (mainClass != null && ! mainClass.isBlank()) {
+							Class<?> clazz = Class.forName( mainClass.trim() );
+							String pkg = clazz.getPackageName();
+							if (pkg != null && ! pkg.isBlank())
+								return Optional.of( pkg );
+
+						}
+
+					}
+
+				}
+
+			}
+
+		} catch (Throwable ignore) {}
+
+		// 3) src/main/java에서 앵커 탐색 (SpringBootApplication / main / *Application.java)
+		Path srcMainJava = projectRoot.resolve( "src/main/java" );
+		Optional<String> fromSrc = detectBasePackageFromSources( srcMainJava );
+		if (fromSrc.isPresent())
+			return fromSrc;
+
+		return Optional.empty();
+
+	}
+
+	private static Optional<String> detectBasePackageFromSources(
+		Path srcMainJava
+	) {
+
+		if (! Files.isDirectory( srcMainJava ))
+			return Optional.empty();
+
+		try (var stream = Files.walk( srcMainJava )) {
+			// 1순위: *Application.java (스프링 부트 관례)
+			Optional<Path> app = stream
+				.filter( p -> p.toString().endsWith( ".java" ) )
+				.filter( p -> p.getFileName().toString().endsWith( "Application.java" ) )
+				.findFirst();
+
+			if (app.isPresent()) { return readPackageDeclaration( app.get() ); }
+
+		} catch (Throwable ignore) {}
+
+		// 2순위: @SpringBootApplication 또는 main 메서드 포함 파일
+		try (var stream = Files.walk( srcMainJava )) {
+			Optional<Path> anchor = stream
+				.filter( p -> p.toString().endsWith( ".java" ) )
+				.filter( p -> {
+
+					try {
+						// 파일 전체 읽기 대신 적당량만 읽는 게 더 안전/빠름
+						String s = Files.readString( p );
+						return s.contains( "@SpringBootApplication" ) || s.contains( "public static void main(" );
+
+					} catch (Throwable e) {
+						return false;
+
+					}
+
+				} )
+				.findFirst();
+
+			if (anchor.isPresent()) { return readPackageDeclaration( anchor.get() ); }
+
+		} catch (Throwable ignore) {}
+
+		return Optional.empty();
+
+	}
+
+	private static Optional<String> readPackageDeclaration(
+		Path javaFile
+	) {
+
+		try (var lines = Files.lines( javaFile )) {
+			return lines
+				.map( String::trim )
+				.filter( l -> l.startsWith( "package " ) && l.endsWith( ";" ) )
+				.map( l -> l.substring( "package ".length(), l.length() - 1 ).trim() )
+				.filter( s -> ! s.isBlank() )
+				.findFirst();
+
+		} catch (Throwable ignore) {
+			return Optional.empty();
+
+		}
+
+	}
 
 	/** 슬래시 정규화(백슬래시→슬래시) */
 	public static String slash(

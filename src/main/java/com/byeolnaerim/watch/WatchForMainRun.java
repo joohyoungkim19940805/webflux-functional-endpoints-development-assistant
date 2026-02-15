@@ -263,15 +263,32 @@ public final class WatchForMainRun {
 
 	public void start() throws Exception {
 
+		watchers.clear();
+
 		// lazy 생성
-		if (entity == null && config.entityFactory != null)
+		if (entity == null && config.entityFactory != null) {
 			entity = config.entityFactory.create();
-		if (handler == null && config.handlerFactory != null)
+			watchers.add( entity );
+
+		}
+
+		if (handler == null && config.handlerFactory != null) {
 			handler = config.handlerFactory.create();
-		if (swagger == null && config.swaggerFactory != null)
+			watchers.add( handler );
+
+		}
+
+		if (swagger == null && config.swaggerFactory != null) {
 			swagger = config.swaggerFactory.create();
-		if (asyncApiFactory == null && config.asyncApiFactory != null)
+			watchers.add( swagger );
+
+		}
+
+		if (asyncApiFactory == null && config.asyncApiFactory != null) {
 			asyncApiFactory = config.asyncApiFactory.create();
+			watchers.add( asyncApiFactory );
+
+		}
 
 		running = true;
 
