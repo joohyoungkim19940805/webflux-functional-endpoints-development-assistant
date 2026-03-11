@@ -26,12 +26,27 @@ import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.visitor.filter.TypeFilter;
 
 
+/**
+ * Parses functional routing calls and converts them into {@link RouteInfo} metadata.
+ * <p>This parser reconstructs full paths from nested routing structures,
+ * extracts accepted media types, derives grouping information,
+ * and captures the handler expression associated with each HTTP route call.</p>
+ */
 public class RouteParser {
 
 
 	public static final Set<String> HTTP_METHODS = new HashSet<>( Arrays.asList( "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD", "TRACE" ) );
 
-
+	/**
+	 * Extracts route metadata from a single functional HTTP routing call.
+	 *
+	 * @param httpCall
+	 *            the HTTP routing invocation
+	 * @param routeMethodName
+	 *            the enclosing router method name
+	 * 
+	 * @return the extracted route metadata
+	 */
 	public static RouteInfo extractRouteInfoFromHttpCall(
 		CtInvocation<?> httpCall, String routeMethodName
 	) {

@@ -26,8 +26,25 @@ import spoon.reflect.visitor.filter.TypeFilter;
 import tools.jackson.databind.json.JsonMapper;
 
 
+/**
+ * Generates Swagger/OpenAPI JSON from parsed route and handler metadata.
+ * <p>This class converts {@link RouteInfo} and {@link HandlerInfo} structures
+ * into a JSON document containing paths, request bodies, parameters, responses,
+ * schemas, tags, and grouped tag metadata.</p>
+ */
 public class SwaggerGenerator {
 
+	/**
+	 * Generates a Swagger/OpenAPI JSON document from the given route metadata.
+	 *
+	 * @param routeInfos
+	 *            the parsed route metadata
+	 * 
+	 * @return the generated Swagger JSON string
+	 * 
+	 * @throws Exception
+	 *             if JSON generation fails
+	 */
 	@SuppressWarnings({
 		"unchecked", "rawtypes"
 	})

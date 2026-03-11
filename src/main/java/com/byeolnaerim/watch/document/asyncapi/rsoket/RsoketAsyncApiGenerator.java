@@ -13,6 +13,10 @@ import tools.jackson.databind.json.JsonMapper;
 
 
 /**
+ * Generates an AsyncAPI 2.6.0 JSON document from parsed RSocket route metadata.
+ * <p>This generator groups routes by destination, builds publish/subscribe operations,
+ * emits reusable message and schema components, and attaches RSocket-specific metadata
+ * through {@code x-rsocket} extension fields.</p>
  * RsoketRouteInfo 목록을 AsyncAPI(2.6.0) 문서(JSON)로 변환.
  * - AsyncAPI Studio로 UI 렌더링 가능
  * - nodejs/typescript에서 파싱하여 서비스/유니언 타입 코드를 만들기 쉽도록
@@ -22,6 +26,9 @@ import tools.jackson.databind.json.JsonMapper;
  */
 public class RsoketAsyncApiGenerator {
 
+	/**
+	 * Mutable options used when generating the AsyncAPI document.
+	 */
 	public static final class Options {
 
 		private String title = "RSocket API";
@@ -36,8 +43,21 @@ public class RsoketAsyncApiGenerator {
 
 		private String defaultContentType = "application/json";
 
+		/**
+		 * Returns the AsyncAPI document title.
+		 *
+		 * @return the document title
+		 */
 		public String getTitle() { return title; }
 
+		/**
+		 * Sets the AsyncAPI document title.
+		 *
+		 * @param title
+		 *            the document title
+		 * 
+		 * @return this options object
+		 */
 		public Options setTitle(
 			String title
 		) {
@@ -47,8 +67,21 @@ public class RsoketAsyncApiGenerator {
 
 		}
 
+		/**
+		 * Returns the AsyncAPI document version.
+		 *
+		 * @return the document version
+		 */
 		public String getVersion() { return version; }
 
+		/**
+		 * Sets the AsyncAPI document version.
+		 *
+		 * @param version
+		 *            the document version
+		 * 
+		 * @return this options object
+		 */
 		public Options setVersion(
 			String version
 		) {
@@ -58,8 +91,21 @@ public class RsoketAsyncApiGenerator {
 
 		}
 
+		/**
+		 * Returns the AsyncAPI document description.
+		 *
+		 * @return the document description
+		 */
 		public String getDescription() { return description; }
 
+		/**
+		 * Sets the AsyncAPI document description.
+		 *
+		 * @param description
+		 *            the document description
+		 * 
+		 * @return this options object
+		 */
 		public Options setDescription(
 			String description
 		) {
@@ -69,8 +115,21 @@ public class RsoketAsyncApiGenerator {
 
 		}
 
+		/**
+		 * Returns the logical server name used in the AsyncAPI document.
+		 *
+		 * @return the server name
+		 */
 		public String getServerName() { return serverName; }
 
+		/**
+		 * Sets the logical server name used in the AsyncAPI document.
+		 *
+		 * @param serverName
+		 *            the server name
+		 * 
+		 * @return this options object
+		 */
 		public Options setServerName(
 			String serverName
 		) {
@@ -80,8 +139,21 @@ public class RsoketAsyncApiGenerator {
 
 		}
 
+		/**
+		 * Returns the RSocket server URL.
+		 *
+		 * @return the server URL
+		 */
 		public String getServerUrl() { return serverUrl; }
 
+		/**
+		 * Sets the RSocket server URL.
+		 *
+		 * @param serverUrl
+		 *            the server URL
+		 * 
+		 * @return this options object
+		 */
 		public Options setServerUrl(
 			String serverUrl
 		) {
@@ -91,8 +163,18 @@ public class RsoketAsyncApiGenerator {
 
 		}
 
+		/**
+		 * Returns the default content type used for generated messages.
+		 *
+		 * @return the default content type
+		 */
 		public String getDefaultContentType() { return defaultContentType; }
 
+		/**
+		 * Returns the default content type used for generated messages.
+		 *
+		 * @return the default content type
+		 */
 		public Options setDefaultContentType(
 			String defaultContentType
 		) {
@@ -104,9 +186,21 @@ public class RsoketAsyncApiGenerator {
 
 	}
 
-	@SuppressWarnings({
-		"unchecked", "rawtypes"
-	})
+	/**
+	 * Generates an AsyncAPI 2.6.0 JSON document from the given RSocket routes.
+	 * <p>The generated document contains servers, channels, reusable schemas, reusable messages,
+	 * and RSocket-specific extension metadata.</p>
+	 *
+	 * @param routes
+	 *            the parsed RSocket routes
+	 * @param options
+	 *            the generation options; when {@code null}, default options are used
+	 * 
+	 * @return the generated AsyncAPI JSON string
+	 * 
+	 * @throws Exception
+	 *             if JSON generation fails
+	 */
 	public static String generateAsyncApiJson(
 		List<RsoketRouteInfo> routes, Options options
 	)

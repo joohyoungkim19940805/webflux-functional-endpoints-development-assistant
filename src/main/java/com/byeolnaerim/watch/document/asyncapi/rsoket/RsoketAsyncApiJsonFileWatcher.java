@@ -14,11 +14,16 @@ import reactor.core.scheduler.Schedulers;
 
 
 /**
- * src/main/java 를 감시하면서 @Controller/@MessageMapping 기반 RSocket 엔드포인트를 파싱하여
- * AsyncAPI(2.6.0) 문서 JSON(기본: src/main/resources/static/asyncapi-rsocket.json)로 저장.
+ * Watches source files and regenerates an AsyncAPI JSON document for RSocket endpoints.
+ * <p>This watcher parses {@code @Controller}/{@code @MessageMapping}-based RSocket routes,
+ * sorts them deterministically, generates AsyncAPI JSON, and writes the output file only
+ * when its content has changed.</p>
  */
 public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
+	/**
+	 * Immutable configuration for {@link RsoketAsyncApiJsonFileWatcher}.
+	 */
 	public static final class Config {
 
 		private final String watchDirectory;
@@ -55,18 +60,34 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
 		}
 
+		/**
+		 * Creates a new configuration builder.
+		 *
+		 * @return a new builder
+		 */
 		public static Builder builder() {
 
 			return new Builder();
 
 		}
 
+		/**
+		 * Builder for {@link RsoketAsyncApiJsonFileWatcher.Config}.
+		 */
 		public static final class Builder {
 
 			private String watchDirectory = ProjectDefaults.SRC_MAIN_JAVA;
 
 			private String asyncApiOutputFile = "src/main/resources/static/asyncapi-rsocket.json";
 
+			/**
+			 * Sets the source directory to watch and parse.
+			 *
+			 * @param p
+			 *            the watch directory
+			 * 
+			 * @return this builder
+			 */
 			public Builder watchDirectory(
 				String p
 			) {
@@ -76,6 +97,14 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the target path of the generated AsyncAPI JSON file.
+			 *
+			 * @param p
+			 *            the output file path
+			 * 
+			 * @return this builder
+			 */
 			public Builder asyncApiOutputFile(
 				String p
 			) {
@@ -85,6 +114,11 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Builds an immutable watcher configuration.
+			 *
+			 * @return the built configuration
+			 */
 			public Config build() {
 
 				return new Config( this );
@@ -97,6 +131,12 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
 	private final Config config;
 
+	/**
+	 * Creates a new AsyncAPI JSON watcher.
+	 *
+	 * @param config
+	 *            the watcher configuration
+	 */
 	public RsoketAsyncApiJsonFileWatcher(
 											Config config
 	) {
@@ -105,6 +145,12 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Executes a single AsyncAPI generation pass.
+	 *
+	 * @return a {@link reactor.core.publisher.Mono} emitting {@code true} if the output file was
+	 *         changed
+	 */
 	@Override
 	public Mono<Boolean> runGenerateTask() {
 
@@ -124,6 +170,9 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Starts watching the configured source directory.
+	 */
 	@Override
 	public void startWatching() {
 

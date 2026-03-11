@@ -7,6 +7,12 @@ import java.util.List;
 import java.util.Map;
 import spoon.reflect.reference.CtTypeReference;
 
+
+/**
+ * Aggregated request and response metadata extracted from a handler implementation.
+ * <p>This class groups request-body schemas, query parameters, path variables,
+ * response-body schemas, produced media types, header parameters, and cookie parameters.</p>
+ */
 public class HandlerInfo {
 
 	// Request Body 관련 정보: request body로 매핑될 클래스 이름 -> 해당 클래스의 필드 정보를 맵핑한 Map
@@ -79,6 +85,12 @@ public class HandlerInfo {
 
 	}
 
+	/**
+	 * Detailed metadata for a single request or response element.
+	 * <p>This structure stores logical name, default value, required/nullable flags,
+	 * resolved type information, generic type metadata, nested field metadata,
+	 * documentation fields, and logical layer position.</p>
+	 */
 	public static class Info {
 
 		private String name;
@@ -92,7 +104,7 @@ public class HandlerInfo {
 		private Class<?> type;
 
 		private CtTypeReference<?> typeRef;
-		
+
 		private List<Info> genericTypes = new ArrayList<>();
 
 		private Map<String, Info> fields = new HashMap<>();
@@ -103,6 +115,14 @@ public class HandlerInfo {
 
 		private Object example;
 
+		/**
+		 * Adds a nested field description to this info object.
+		 *
+		 * @param name
+		 *            the field name
+		 * @param info
+		 *            the nested field metadata
+		 */
 		public void addField(
 			String name, Info info
 		) {
@@ -149,7 +169,7 @@ public class HandlerInfo {
 			CtTypeReference<?> typeRef
 		) { this.typeRef = typeRef; }
 
-		
+
 		public List<Info> getGenericTypes() { return genericTypes; }
 
 		public void setGenericTypes(

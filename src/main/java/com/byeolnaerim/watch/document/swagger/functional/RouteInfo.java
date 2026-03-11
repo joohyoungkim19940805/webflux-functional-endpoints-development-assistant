@@ -6,6 +6,12 @@ import java.util.List;
 import spoon.reflect.code.CtExpression;
 
 
+/**
+ * Metadata for a parsed route definition.
+ * <p>This class stores the HTTP method, URL, endpoint name, accepted media types,
+ * handler expression metadata, security metadata, and grouping information used
+ * during documentation generation.</p>
+ */
 public class RouteInfo {
 
 	private String httpMethod;
@@ -82,6 +88,7 @@ public class RouteInfo {
 	public void setChildGroup(
 		String childGroup
 	) { this.childGroup = childGroup; }
+
 	@Override
 	public String toString() {
 

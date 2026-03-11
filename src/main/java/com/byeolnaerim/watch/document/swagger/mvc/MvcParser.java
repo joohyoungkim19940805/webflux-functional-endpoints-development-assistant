@@ -14,8 +14,8 @@ import com.byeolnaerim.watch.document.anntation.SelectedRequestParam;
 import com.byeolnaerim.watch.document.anntation.SelectedRequestPath;
 import com.byeolnaerim.watch.document.anntation.SelectedResponseBody;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo;
-import com.byeolnaerim.watch.document.swagger.functional.RouteInfo;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo.LayerPosition;
+import com.byeolnaerim.watch.document.swagger.functional.RouteInfo;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtExpression;
@@ -34,6 +34,11 @@ import spoon.reflect.factory.Factory;
 import spoon.reflect.reference.CtTypeReference;
 
 
+/**
+ * Parses MVC-style controller endpoints and converts them into {@link RouteInfo} metadata.
+ * <p>This parser supports common Spring mapping annotations, class-level and method-level paths,
+ * request/response metadata extraction, and parameter classification for Swagger generation.</p>
+ */
 public final class MvcParser {
 
 	// -----------------------------
@@ -67,9 +72,14 @@ public final class MvcParser {
 
 	private MvcParser() {}
 
-	// ============================
-	// Public entry
-	// ============================
+	/**
+	 * Parses MVC routes from the given Spoon model.
+	 *
+	 * @param model
+	 *            the Spoon model to inspect
+	 * 
+	 * @return the extracted route metadata
+	 */
 	public static List<RouteInfo> parseRoutes(
 		CtModel model
 	) {

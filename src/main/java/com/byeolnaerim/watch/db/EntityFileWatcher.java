@@ -35,6 +35,13 @@ import spoon.reflect.visitor.filter.AbstractFilter;
 import spoon.support.JavaOutputProcessor;
 
 
+/**
+ * Watches entity source files and generates enum-based metadata artifacts.
+ * <p>By default, this watcher treats classes annotated with the configured document annotation
+ * as entities and generates field-name enums as well as a collection-name enum.</p>
+ * <p>It resolves field raw names through lightweight annotation-name matching so that it can
+ * remain resilient even in no-classpath analysis mode.</p>
+ */
 public class EntityFileWatcher extends AbstractWatcher {
 
 	// ====== Field raw-name annotation candidates (no dependency; string match only) ======
@@ -564,6 +571,9 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Immutable configuration for {@link EntityFileWatcher}.
+	 */
 	public static final class Config {
 
 		private final String collectionNameEnum;
@@ -590,14 +600,23 @@ public class EntityFileWatcher extends AbstractWatcher {
 			this.webfluxDocumentName = b.webfluxDocumentName;
 
 		}
-		// getters...
 
+		/**
+		 * Creates a new entity-watcher configuration builder.
+		 *
+		 * @return a new builder
+		 */
 		public static Builder builder() {
 
 			return new Builder();
 
 		}
 
+		/**
+		 * Builder for {@link EntityFileWatcher.Config}.
+		 * <p>This builder controls source roots, entity package scanning,
+		 * generated enum destinations, and the annotation name used to recognize entities.</p>
+		 */
 		public static final class Builder {
 
 			private String collectionNameEnum = "CollectionNames"; // 필요시 변경
@@ -612,6 +631,14 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 			private String webfluxDocumentName = "org.springframework.data.mongodb.core.mapping.Document";
 
+			/**
+			 * Sets the generated collection-name enum type name.
+			 *
+			 * @param v
+			 *            the enum type name
+			 * 
+			 * @return this builder
+			 */
 			public Builder collectionNameEnum(
 				String v
 			) {
@@ -621,6 +648,14 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the package where the collection-name enum will be generated.
+			 *
+			 * @param v
+			 *            the target package
+			 * 
+			 * @return this builder
+			 */
 			public Builder collectionNamePackage(
 				String v
 			) {
@@ -630,6 +665,14 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the source root path to scan.
+			 *
+			 * @param v
+			 *            the source root path
+			 * 
+			 * @return this builder
+			 */
 			public Builder rootPath(
 				String v
 			) {
@@ -639,6 +682,14 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the package where entity field enums will be generated.
+			 *
+			 * @param v
+			 *            the target package
+			 * 
+			 * @return this builder
+			 */
 			public Builder fieldPackage(
 				String v
 			) {
@@ -648,6 +699,14 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the package that contains entity source classes.
+			 *
+			 * @param v
+			 *            the entity package
+			 * 
+			 * @return this builder
+			 */
 			public Builder entityPackage(
 				String v
 			) {
@@ -657,6 +716,14 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the fully qualified annotation name used to recognize entity classes.
+			 *
+			 * @param v
+			 *            the entity annotation name
+			 * 
+			 * @return this builder
+			 */
 			public Builder webfluxDocumentName(
 				String v
 			) {
@@ -666,6 +733,11 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Builds an immutable {@link Config} instance.
+			 *
+			 * @return the built configuration
+			 */
 			public Config build() {
 
 				return new Config( this );
@@ -682,6 +754,12 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 	protected final JavaOutputProcessor javaOutputProcessor = new JavaOutputProcessor();
 
+	/**
+	 * Creates a new entity watcher and prepares Spoon-based source processing.
+	 *
+	 * @param config
+	 *            the watcher configuration
+	 */
 	public EntityFileWatcher(
 								Config config
 	) {
@@ -718,7 +796,11 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 	}
 
-	/** 오케스트레이터가 호출할 실제 작업 (한 번 실행) */
+	/**
+	 * Executes a single entity metadata generation pass.
+	 *
+	 * @return a {@link Mono} emitting {@code true} if any generated enum source was changed
+	 */
 	@Override
 	public Mono<Boolean> runGenerateTask() {
 
@@ -734,6 +816,9 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Starts watching the configured entity source root.
+	 */
 	@Override
 	public void startWatching() {
 
@@ -747,6 +832,11 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Scans configured entity classes and generates or updates field and collection enum files.
+	 *
+	 * @return a {@link Mono} emitting {@code true} if any generated output was changed
+	 */
 	public Mono<Boolean> generateFiles() {
 
 		Launcher spoon = new Launcher();
