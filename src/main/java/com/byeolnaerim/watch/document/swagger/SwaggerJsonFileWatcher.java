@@ -24,12 +24,32 @@ import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.visitor.filter.TypeFilter;
 
 
+/**
+ * Generates a Swagger/OpenAPI JSON document from the given route metadata.
+ *
+ * @param routeInfos
+ *            the parsed route metadata
+ * 
+ * @return the generated Swagger JSON string
+ * 
+ * @throws Exception
+ *             if JSON generation fails
+ */
 public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
+	/**
+	 * Supported source parsing modes for Swagger generation.
+	 */
 	public static enum ProjectMode {
-		MVC, FUNCTIONAL_ENDPOINT
+		/** Parses annotated MVC controller endpoints. */
+		MVC, //
+		/** Parses functional endpoints based on {@code RouterFunction}. */
+		FUNCTIONAL_ENDPOINT
 	}
 
+	/**
+	 * Immutable configuration for {@link SwaggerJsonFileWatcher}.
+	 */
 	public static final class Config {
 
 		private final String watchDirectory;
@@ -58,30 +78,41 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 		}
 
+		/** get watchDirectory */
 		public String watchDirectory() {
 
 			return watchDirectory;
 
 		}
 
+		/** swaggerOutputFile */
 		public String swaggerOutputFile() {
 
 			return swaggerOutputFile;
 
 		}
 
+		/** projectMode */
 		public ProjectMode projectMode() {
 
 			return projectMode;
 
 		}
 
+		/**
+		 * Creates a new Swagger watcher configuration builder.
+		 *
+		 * @return a new builder
+		 */
 		public static Builder builder() {
 
 			return new Builder();
 
 		}
 
+		/**
+		 * Builder for {@link SwaggerJsonFileWatcher.Config}.
+		 */
 		public static final class Builder {
 
 			private String watchDirectory = ProjectDefaults.SRC_MAIN_JAVA;
@@ -90,6 +121,14 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 			private ProjectMode projectMode = ProjectMode.FUNCTIONAL_ENDPOINT;
 
+			/**
+			 * Sets the source directory to watch and analyze.
+			 *
+			 * @param p
+			 *            the watch directory
+			 * 
+			 * @return this builder
+			 */
 			public Builder watchDirectory(
 				String p
 			) {
@@ -99,6 +138,14 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the target output path of the generated Swagger JSON file.
+			 *
+			 * @param p
+			 *            the output file path
+			 * 
+			 * @return this builder
+			 */
 			public Builder swaggerOutputFile(
 				String p
 			) {
@@ -108,6 +155,14 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the parsing mode used for route extraction.
+			 *
+			 * @param mode
+			 *            the project mode
+			 * 
+			 * @return this builder
+			 */
 			public Builder projectMode(
 				ProjectMode mode
 			) {
@@ -117,6 +172,11 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Builds an immutable {@link Config} instance.
+			 *
+			 * @return the built configuration
+			 */
 			public Config build() {
 
 				return new Config( this );
@@ -129,6 +189,12 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	private final Config config;
 
+	/**
+	 * Creates a new Swagger JSON watcher.
+	 *
+	 * @param config
+	 *            the watcher configuration
+	 */
 	public SwaggerJsonFileWatcher(
 									Config config
 	) {
@@ -137,7 +203,11 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	/** 오케스트레이터에서 호출하는 1회 작업 */
+	/**
+	 * Executes a single Swagger generation pass and writes the output file only when changed.
+	 *
+	 * @return a {@link Mono} emitting {@code true} if the Swagger file was updated
+	 */
 	@Override
 	public Mono<Boolean> runGenerateTask() {
 
@@ -160,6 +230,9 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Starts watching the configured source directory.
+	 */
 	@Override
 	public void startWatching() {
 

@@ -23,18 +23,40 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 
+/**
+ * Main development-time orchestrator that wires multiple watchers together
+ * and runs them as a coordinated generation pipeline.
+ * <p>This class performs an initial generation pass, subscribes to watcher event streams,
+ * debounces bursts of file changes, and re-runs generation when relevant source files change.</p>
+ * <p>It can also monitor classpath-related resources and touch a reload-trigger file
+ * to help devtools-like reload workflows.</p>
+ */
 public final class WatchForMainRun {
 
-	/* =========================
-	 * 생성 팩토리 정의
-	 * ========================= */
+	/**
+	 * Factory interface for lazily creating watcher instances.
+	 *
+	 * @param <T>
+	 *            the watcher type
+	 */
 	@FunctionalInterface
 	public interface WatcherFactory<T> {
 
+		/**
+		 * Creates a watcher instance.
+		 *
+		 * @return the created watcher
+		 * 
+		 * @throws Exception
+		 *             if creation fails
+		 */
 		T create() throws Exception;
 
 	}
 
+	/**
+	 * Immutable configuration for {@link WatchForMainRun}.
+	 */
 	public static final class Config {
 
 		private final Path trigger;
@@ -68,12 +90,22 @@ public final class WatchForMainRun {
 
 		}
 
+		/**
+		 * Creates a new configuration builder.
+		 *
+		 * @return a new builder
+		 */
 		public static Builder builder() {
 
 			return new Builder();
 
 		}
 
+		/**
+		 * Builder for {@link WatchForMainRun.Config}.
+		 * <p>This builder configures debounce behavior, watcher factories,
+		 * reload trigger handling, and optional classpath watch roots.</p>
+		 */
 		public static final class Builder {
 
 			private Path trigger; // Paths.get( "src/main/resources/.reloadtrigger" );
@@ -90,6 +122,14 @@ public final class WatchForMainRun {
 
 			private final List<Path> classpathWatchRoots = new ArrayList<>();
 
+			/**
+			 * Sets the reload-trigger file path.
+			 *
+			 * @param p
+			 *            the trigger file path
+			 * 
+			 * @return this builder
+			 */
 			public Builder trigger(
 				Path p
 			) {
@@ -99,6 +139,14 @@ public final class WatchForMainRun {
 
 			}
 
+			/**
+			 * Sets the debounce window used when coalescing bursts of file-change events.
+			 *
+			 * @param ms
+			 *            the debounce duration in milliseconds
+			 * 
+			 * @return this builder
+			 */
 			public Builder debounceMillis(
 				long ms
 			) {
@@ -108,7 +156,14 @@ public final class WatchForMainRun {
 
 			}
 
-			/* ====== 권장: Config로 주입 ====== */
+			/**
+			 * Configures the entity watcher using a concrete watcher configuration object.
+			 *
+			 * @param cfg
+			 *            the entity watcher configuration
+			 * 
+			 * @return this builder
+			 */
 			public Builder entityConfig(
 				EntityFileWatcher.Config cfg
 			) {
@@ -118,6 +173,14 @@ public final class WatchForMainRun {
 
 			}
 
+			/**
+			 * Configures the handler generator using a concrete watcher configuration object.
+			 *
+			 * @param cfg
+			 *            the handler generator configuration
+			 * 
+			 * @return this builder
+			 */
 			public Builder handlerConfig(
 				HandlerGenerator.Config cfg
 			) {
@@ -127,6 +190,14 @@ public final class WatchForMainRun {
 
 			}
 
+			/**
+			 * Configures the Swagger generator watcher using a concrete watcher configuration object.
+			 *
+			 * @param cfg
+			 *            the Swagger watcher configuration
+			 * 
+			 * @return this builder
+			 */
 			public Builder swaggerConfig(
 				SwaggerJsonFileWatcher.Config cfg
 			) {
@@ -136,7 +207,15 @@ public final class WatchForMainRun {
 
 			}
 
-			/* ====== 필요시: 커스텀 팩토리 직접 주입 ====== */
+			/* ====== 커스텀 팩토리 직접 주입 ====== */
+			/**
+			 * Sets a custom lazy factory for the entity watcher.
+			 *
+			 * @param f
+			 *            the watcher factory
+			 * 
+			 * @return this builder
+			 */
 			public Builder entityFactory(
 				WatcherFactory<EntityFileWatcher> f
 			) {
@@ -146,6 +225,14 @@ public final class WatchForMainRun {
 
 			}
 
+			/**
+			 * Sets a custom lazy factory for the handler generator.
+			 *
+			 * @param f
+			 *            the watcher factory
+			 * 
+			 * @return this builder
+			 */
 			public Builder handlerFactory(
 				WatcherFactory<HandlerGenerator> f
 			) {
@@ -155,6 +242,14 @@ public final class WatchForMainRun {
 
 			}
 
+			/**
+			 * Sets a custom lazy factory for the Swagger watcher.
+			 *
+			 * @param f
+			 *            the watcher factory
+			 * 
+			 * @return this builder
+			 */
 			public Builder swaggerFactory(
 				WatcherFactory<SwaggerJsonFileWatcher> f
 			) {
@@ -164,6 +259,14 @@ public final class WatchForMainRun {
 
 			}
 
+			/**
+			 * Sets a custom lazy factory for the AsyncAPI watcher.
+			 *
+			 * @param f
+			 *            the watcher factory
+			 * 
+			 * @return this builder
+			 */
 			public Builder asyncApiFactory(
 				WatcherFactory<RsoketAsyncApiJsonFileWatcher> f
 			) {
@@ -173,6 +276,14 @@ public final class WatchForMainRun {
 
 			}
 
+			/**
+			 * Adds classpath watch roots from a CSV or OS path-separator-delimited string.
+			 *
+			 * @param pathsCsvOrPathSep
+			 *            the classpath root list
+			 * 
+			 * @return this builder
+			 */
 			public Builder classpathWatchPaths(
 				String pathsCsvOrPathSep
 			) {
@@ -194,7 +305,13 @@ public final class WatchForMainRun {
 
 			}
 
-
+			/**
+			 * Builds an immutable {@link Config} instance.
+			 * <p>If no explicit trigger or classpath watch roots are provided,
+			 * sensible defaults are inferred from the current project and classpath.</p>
+			 *
+			 * @return the built configuration
+			 */
 			public Config build() {
 
 				if (trigger != null) {
@@ -253,6 +370,12 @@ public final class WatchForMainRun {
 
 	private final List<AbstractWatcher> watchers = new ArrayList<>();
 
+	/**
+	 * Creates a new orchestrator with the given configuration.
+	 *
+	 * @param config
+	 *            the orchestrator configuration
+	 */
 	public WatchForMainRun(
 							Config config
 	) {
@@ -261,6 +384,14 @@ public final class WatchForMainRun {
 
 	}
 
+	/**
+	 * Starts the orchestrator and all configured watchers.
+	 * <p>This method performs an initial generation pass, subscribes to watcher events,
+	 * optionally starts classpath watchers, and then starts file watching for all generators.</p>
+	 *
+	 * @throws Exception
+	 *             if startup fails
+	 */
 	public void start() throws Exception {
 
 		watchers.clear();
@@ -340,6 +471,9 @@ public final class WatchForMainRun {
 
 	}
 
+	/**
+	 * Stops all subscriptions and closes all managed watchers.
+	 */
 	public void stop() {
 
 		running = false;

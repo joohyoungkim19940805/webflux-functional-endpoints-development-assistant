@@ -23,7 +23,12 @@ import reactor.core.publisher.Sinks;
 
 
 /**
- * 변경 감지만 담당. 실제 작업은 오케스트레이터가 수행.
+ * Base watcher for file-system-driven dev-time generators.
+ * <p>This class is responsible only for detecting file changes and exposing them
+ * as a reactive event stream. Concrete subclasses define the watch root,
+ * generation task, and startup policy.</p>
+ * <p>It also provides a utility method that writes files only when content has changed,
+ * which helps avoid unnecessary downstream reloads.</p>
  */
 public abstract class AbstractWatcher implements AutoCloseable {
 
@@ -35,14 +40,39 @@ public abstract class AbstractWatcher implements AutoCloseable {
 
 	private WatchService watchService;
 
-	/** 감시 시작 루트 디렉터리 */
+	/**
+	 * Returns the root directory to be monitored recursively.
+	 * 감시 시작 루트 디렉터리
+	 * 
+	 * @return the watch root directory
+	 */
 	protected abstract Path root();
 
+	/**
+	 * Executes a single generation pass for this watcher.
+	 * <p>This method is typically called by the orchestrator when relevant file changes
+	 * have been detected.</p>
+	 *
+	 * @return a {@link Mono} emitting {@code true} if any output was changed
+	 */
 	public abstract Mono<Boolean> runGenerateTask();
 
+	/**
+	 * Executes a single generation pass for this watcher.
+	 * <p>This method is typically called by the orchestrator when relevant file changes
+	 * have been detected.</p>
+	 *
+	 * @return a {@link Mono} emitting {@code true} if any output was changed
+	 */
 	public abstract void startWatching();
 
-	/** 어떤 이벤트를 감시할지 (기본: CREATE/MODIFY) */
+	/**
+	 * Returns the file-system event kinds to monitor.
+	 * <p>The default implementation watches create and modify events.</p>
+	 * 어떤 이벤트를 감시할지 (default: CREATE/MODIFY)
+	 * 
+	 * @return the monitored event kinds
+	 */
 	protected WatchEvent.Kind<?>[] kinds() {
 
 		return new WatchEvent.Kind<?>[] {
@@ -51,6 +81,21 @@ public abstract class AbstractWatcher implements AutoCloseable {
 
 	}
 
+	/**
+	 * Writes the given bytes to the target path only when the content has actually changed.
+	 * <p>This method performs an atomic replace through a temporary file when possible.</p>
+	 *
+	 * @param out
+	 *            the output file path
+	 * @param newBytes
+	 *            the new file content
+	 * 
+	 * @return {@code true} if the file was created or updated, {@code false} if the content was
+	 *         unchanged
+	 * 
+	 * @throws IOException
+	 *             if file writing fails
+	 */
 	public boolean writeIfChanged(
 		Path out, byte[] newBytes
 	)
@@ -73,7 +118,13 @@ public abstract class AbstractWatcher implements AutoCloseable {
 
 	}
 
-	/** 외부로 노출되는 변경 스트림 */
+	/**
+	 * Returns the externally visible stream of file-change events.
+	 * <p>The stream is lightly coalesced to reduce bursts of repeated file-system events
+	 * from the same change sequence.</p>
+	 *
+	 * @return a reactive stream of file changes
+	 */
 	public Flux<FileChange> events() {
 
 		// 짧은 디바운스: 같은 디렉터리에서 잦은 이벤트를 약간 합침
@@ -83,7 +134,14 @@ public abstract class AbstractWatcher implements AutoCloseable {
 
 	}
 
-	/** 감시 시작 */
+	/**
+	 * Starts recursive file watching from the configured root directory.
+	 * <p>This method registers the root and all existing subdirectories, starts the internal
+	 * watch loop thread, and emits {@link FileChange} events for relevant file-system updates.</p>
+	 *
+	 * @throws IOException
+	 *             if watcher initialization fails
+	 */
 	public synchronized void start() throws IOException {
 
 		if (running.get())
@@ -177,6 +235,9 @@ public abstract class AbstractWatcher implements AutoCloseable {
 
 	}
 
+	/**
+	 * Stops the watcher and releases the underlying {@link java.nio.file.WatchService}.
+	 */
 	@Override
 	public synchronized void close() {
 

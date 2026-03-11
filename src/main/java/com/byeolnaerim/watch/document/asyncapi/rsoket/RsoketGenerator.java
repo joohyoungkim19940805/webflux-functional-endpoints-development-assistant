@@ -13,11 +13,23 @@ import tools.jackson.databind.json.JsonMapper;
 
 
 /**
- * RsoketRouteInfo 목록을 "rsoket.json" 포맷으로 출력.
- * - 목표: AsyncAPI UI 외에도, 클라이언트 코드제너레이터가 쉽게 파싱할 수 있는 단순 포맷 제공
+ * Generates a simplified {@code rsoket.json} document from parsed RSocket route metadata.
+ * <p>This format is intended to be easier for client-side code generators to consume
+ * than the richer AsyncAPI document.</p>
  */
 public class RsoketGenerator {
 
+	/**
+	 * Generates a simplified RSocket JSON document from the given route metadata.
+	 *
+	 * @param routes
+	 *            the parsed RSocket routes
+	 * 
+	 * @return the generated JSON string
+	 * 
+	 * @throws Exception
+	 *             if JSON generation fails
+	 */
 	public static String generateRsoketJson(
 		List<RsoketRouteInfo> routes
 	)

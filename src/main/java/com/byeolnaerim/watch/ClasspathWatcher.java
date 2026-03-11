@@ -9,12 +9,26 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 
+/**
+ * Watches classpath-related outputs and configuration resources that may require
+ * an application reload.
+ * <p>This watcher filters raw file-system events down to relevant runtime artifacts
+ * such as compiled classes, configuration files, and JAR files.</p>
+ */
 public final class ClasspathWatcher extends AbstractWatcher {
 
 	private final Path root;
 
 	private final Path triggerPath;
 
+	/**
+	 * Creates a classpath watcher.
+	 *
+	 * @param root
+	 *            the classpath root to watch
+	 * @param triggerPath
+	 *            the reload-trigger file to ignore in order to prevent self-trigger loops
+	 */
 	public ClasspathWatcher(
 							Path root,
 							Path triggerPath
@@ -41,6 +55,11 @@ public final class ClasspathWatcher extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Returns only classpath-relevant file changes.
+	 *
+	 * @return a filtered stream of classpath-related file changes
+	 */
 	@Override
 	public Flux<FileChange> events() {
 
@@ -79,6 +98,12 @@ public final class ClasspathWatcher extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Returns a no-op generation result.
+	 * <p>This watcher exists only to detect classpath changes and trigger reload signaling.</p>
+	 *
+	 * @return a {@link Mono} emitting {@code false}
+	 */
 	@Override
 	public Mono<Boolean> runGenerateTask() {
 
@@ -86,6 +111,9 @@ public final class ClasspathWatcher extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Starts watching the configured classpath root.
+	 */
 	@Override
 	public void startWatching() {
 

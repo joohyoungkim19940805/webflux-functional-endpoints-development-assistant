@@ -45,6 +45,12 @@ import spoon.reflect.reference.CtTypeReference;
 import spoon.reflect.visitor.filter.TypeFilter;
 
 
+/**
+ * Parses functional-endpoint handler expressions and extracts {@link HandlerInfo} metadata.
+ * <p>This parser supports lambda handlers and method references, recursively follows
+ * nested method calls and lambda bodies, and attempts to infer query parameters,
+ * path variables, request bodies, and response-body schemas from handler code.</p>
+ */
 public class HandlerParser {
 
 	// private final CtModel model;
@@ -65,6 +71,16 @@ public class HandlerParser {
 
 	private boolean hasResponseBodyAnnotationOverride = false;
 
+	/**
+	 * Parses the given handler expression and returns extracted handler metadata.
+	 *
+	 * @param handlerExpression
+	 *            the handler lambda or method reference
+	 * @param routeName
+	 *            the logical route name used during parsing
+	 * 
+	 * @return the extracted handler metadata
+	 */
 	public HandlerInfo parseHandler(
 		CtExpression<?> handlerExpression, String routeName
 	) {

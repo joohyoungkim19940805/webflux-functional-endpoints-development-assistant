@@ -13,6 +13,10 @@ import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import com.byeolnaerim.watch.AbstractWatcher;
+import com.byeolnaerim.watch.ProjectDefaults;
+import com.byeolnaerim.watch.ProjectDefaults.JavaLevel;
+import com.byeolnaerim.watch.RouteUtil;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.StaticJavaParser;
@@ -42,20 +46,23 @@ import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
-import com.byeolnaerim.watch.AbstractWatcher;
-import com.byeolnaerim.watch.ProjectDefaults;
-import com.byeolnaerim.watch.ProjectDefaults.JavaLevel;
-import com.byeolnaerim.watch.RouteUtil;
 import reactor.core.publisher.Mono;
 
 
 /**
+ * Generates and updates handler classes from router definitions.
+ * <p>This watcher scans router sources, detects {@code RouterFunction<ServerResponse>}
+ * methods, generates missing handler classes and methods, patches handler references,
+ * and injects missing handler parameters and imports into router methods.</p>
  * HandlerGenerator는 라우터 패키지(여러 Router 클래스)를 스캔하여
  * 라우트 경로에 따라 핸들러 클래스를 자동 생성/업데이트하고
  * 라우터의 핸들러 참조를 보정합니다.
  */
 public class HandlerGenerator extends AbstractWatcher {
 
+	/**
+	 * Describes a static import to be added to generated handler source files.
+	 */
 	public static final class StaticImportSpec {
 
 		private final Class<?> type;
@@ -76,6 +83,16 @@ public class HandlerGenerator extends AbstractWatcher {
 
 		}
 
+		/**
+		 * Creates a non-wildcard static import specification.
+		 *
+		 * @param type
+		 *            the declaring type
+		 * @param member
+		 *            the static member name
+		 * 
+		 * @return a new static import specification
+		 */
 		public static StaticImportSpec of(
 			Class<?> type, String member
 		) {
@@ -84,6 +101,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 		}
 
+		/**
+		 * Creates a wildcard static import specification.
+		 *
+		 * @param type
+		 *            the declaring type
+		 * 
+		 * @return a new wildcard static import specification
+		 */
 		public static StaticImportSpec wildcard(
 			Class<?> type
 		) {
@@ -92,18 +117,21 @@ public class HandlerGenerator extends AbstractWatcher {
 
 		}
 
+		/** get type */
 		public Class<?> type() {
 
 			return type;
 
 		}
 
+		/** get member */
 		public String member() {
 
 			return member;
 
 		}
 
+		/** get wildcard */
 		public boolean wildcard() {
 
 			return wildcard;
@@ -112,6 +140,9 @@ public class HandlerGenerator extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Immutable configuration for {@link HandlerGenerator}.
+	 */
 	public static final class Config {
 
 		private String rootPath; // slash ex) src/main/java
@@ -142,61 +173,83 @@ public class HandlerGenerator extends AbstractWatcher {
 
 		}
 
+		/** get rootPath */
 		public String rootPath() {
 
 			return rootPath;
 
 		}
 
+		/** get routerPackage */
 		public String routerPackage() {
 
 			return routerPackage;
 
 		}
 
+		/** get scanWholeProject */
 		public boolean scanWholeProject() {
 
 			return scanWholeProject;
 
 		}
 
+		/** get handlerPackage */
 		public String handlerPackage() {
 
 			return handlerPackage;
 
 		}
 
+		/** get handlerOutputDir */
 		public String handlerOutputDir() {
 
 			return handlerOutputDir;
 
 		}
 
-		/** 라우터 디렉터리(패키지 기반) */
+		/**
+		 * Returns the router source directory derived from the configured root path and router package.
+		 *
+		 * @return the router source directory path
+		 */
 		public String routerDir() {
 
 			return rootPath + "/" + routerPackage.replace( '.', '/' ) + "/";
 
 		}
 
+		/** get autoinjectionHandlerRequiredImports */
 		public List<Class<?>> autoinjectionHandlerRequiredImports() {
 
 			return autoinjectionHandlerRequiredImports;
 
 		}
 
+		/** get autoinjectionHandlerRequiredImportsStatic */
 		public List<StaticImportSpec> autoinjectionHandlerRequiredImportsStatic() {
 
 			return autoinjectionHandlerRequiredImportsStatic;
 
 		}
 
+		/**
+		 * Creates a new handler-generator configuration builder.
+		 *
+		 * @return a new builder
+		 */
 		public static Builder builder() {
 
 			return new Builder();
 
 		}
 
+		/**
+		 * Builder for {@link HandlerGenerator.Config}.
+		 * <p>This builder controls where router sources are scanned from,
+		 * where generated handlers are written, and which imports are injected
+		 * into generated handler classes.</p>
+		 */
 		public static final class Builder {
 
 			private String rootPath = ProjectDefaults.SRC_MAIN_JAVA;
@@ -227,6 +280,14 @@ public class HandlerGenerator extends AbstractWatcher {
 					)
 			);
 
+			/**
+			 * Sets the source root path to scan.
+			 *
+			 * @param v
+			 *            the source root path
+			 * 
+			 * @return this builder
+			 */
 			public Builder rootPath(
 				String v
 			) {
@@ -236,6 +297,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the router package to scan.
+			 *
+			 * @param v
+			 *            the router package
+			 * 
+			 * @return this builder
+			 */
 			public Builder routerPackage(
 				String v
 			) {
@@ -245,6 +314,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets whether the entire source root should be scanned instead of only the router package.
+			 *
+			 * @param v
+			 *            {@code true} to scan the whole project
+			 * 
+			 * @return this builder
+			 */
 			public Builder scanWholeProject(
 				boolean v
 			) {
@@ -254,6 +331,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the package of generated handler classes.
+			 *
+			 * @param v
+			 *            the handler package
+			 * 
+			 * @return this builder
+			 */
 			public Builder handlerPackage(
 				String v
 			) {
@@ -263,6 +348,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Sets the output directory where generated handler source files are written.
+			 *
+			 * @param v
+			 *            the handler output directory
+			 * 
+			 * @return this builder
+			 */
 			public Builder handlerOutputDir(
 				String v
 			) {
@@ -272,6 +365,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Adds a regular import to generated handler classes.
+			 *
+			 * @param clazz
+			 *            the imported type
+			 * 
+			 * @return this builder
+			 */
 			public Builder addAutoImport(
 				Class<?> clazz
 			) {
@@ -281,6 +382,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Replaces the regular imports used for generated handler classes.
+			 *
+			 * @param classes
+			 *            the imported types
+			 * 
+			 * @return this builder
+			 */
 			public Builder autoImports(
 				List<Class<?>> classes
 			) {
@@ -291,6 +400,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Adds a static import to generated handler classes.
+			 *
+			 * @param spec
+			 *            the static import specification
+			 * 
+			 * @return this builder
+			 */
 			public Builder addStaticAutoImport(
 				StaticImportSpec spec
 			) {
@@ -300,6 +417,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Replaces the static imports used for generated handler classes.
+			 *
+			 * @param specs
+			 *            the static import specifications
+			 * 
+			 * @return this builder
+			 */
 			public Builder staticAutoImports(
 				List<StaticImportSpec> specs
 			) {
@@ -310,6 +435,11 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			}
 
+			/**
+			 * Builds an immutable {@link Config} instance.
+			 *
+			 * @return the built configuration
+			 */
 			public Config build() {
 
 				return new Config( this );
@@ -327,6 +457,17 @@ public class HandlerGenerator extends AbstractWatcher {
 	 */
 	private final JavaParser javaParser;
 
+	/**
+	 * Creates a new handler generator.
+	 * <p>This constructor prepares the JavaParser configuration, symbol solver,
+	 * and output directories used for router parsing and handler source updates.</p>
+	 *
+	 * @param config
+	 *            the generator configuration
+	 * 
+	 * @throws IOException
+	 *             if the output directory cannot be prepared
+	 */
 	public HandlerGenerator(
 							Config config
 	) throws IOException {
@@ -355,7 +496,11 @@ public class HandlerGenerator extends AbstractWatcher {
 
 	}
 
-	/** 오케스트레이터가 호출하는 1회 작업 */
+	/**
+	 * Executes a single handler generation pass.
+	 *
+	 * @return a {@link Mono} emitting {@code true} if any router or handler source was changed
+	 */
 	@Override
 	public Mono<Boolean> runGenerateTask() {
 
@@ -371,6 +516,9 @@ public class HandlerGenerator extends AbstractWatcher {
 
 	}
 
+	/**
+	 * Starts watching the configured router source root.
+	 */
 	@Override
 	public void startWatching() {
 
@@ -384,7 +532,12 @@ public class HandlerGenerator extends AbstractWatcher {
 
 	}
 
-	/** 라우터 패키지(또는 전체) 스캔 → 핸들러 생성/업데이트 & 라우터 보정 */
+	/**
+	 * Scans router source files and generates or updates corresponding handler code.
+	 * 라우터 패키지(또는 전체) 스캔 → 핸들러 생성/업데이트 & 라우터 보정
+	 * 
+	 * @return {@code true} if any source file was changed
+	 */
 	public boolean generateFiles() {
 
 		try {

@@ -11,6 +11,11 @@ import com.github.javaparser.ParserConfiguration;
 
 
 /**
+ * Shared default-value provider for watchers and generators.
+ * <p>This class attempts to infer project-level defaults such as source roots,
+ * resource roots, base package, conventional subpackages, output directories,
+ * and documentation output files.</p>
+ * <p>It is intended to minimize configuration for local development workflows.</p>
  * 모든 Watcher/Generator가 공유하는 기본값 제공자.
  * - 빌드 출력 위치( target/classes / build/classes/... )에서 프로젝트 루트 추정
  * - src/main/java & resources 경로 기본값
@@ -100,7 +105,17 @@ public final class ProjectDefaults {
 	// return Paths.get( System.getProperty( "user.dir", "." ) ).toAbsolutePath().normalize();
 	// }
 
-	protected static Path detectClasspathRoot(
+	/**
+	 * Attempts to detect the effective classpath root for the current project.
+	 * <p>The detection logic prefers the current main class location when available,
+	 * then falls back to common Gradle, Eclipse, or Maven output directories.</p>
+	 *
+	 * @param projectRoot
+	 *            the detected project root
+	 * 
+	 * @return the resolved classpath root
+	 */
+	public static Path detectClasspathRoot(
 		Path projectRoot
 	) {
 
@@ -150,7 +165,13 @@ public final class ProjectDefaults {
 
 	}
 
-	protected static Path detectProjectRoot() {
+	/**
+	 * Attempts to detect the project root by walking upward from the current code location
+	 * until a directory containing {@code src} is found.
+	 *
+	 * @return the detected project root, or the current working directory as a fallback
+	 */
+	public static Path detectProjectRoot() {
 
 		try {
 			var url = ProjectDefaults.class.getProtectionDomain().getCodeSource().getLocation();
@@ -178,12 +199,12 @@ public final class ProjectDefaults {
 		Path projectRoot
 	) {
 
-		// 0) override
+		// override
 		String override = System.getProperty( BASE_PACKAGE_OVERRIDE_PROP );
 
 		if (override != null && ! override.isBlank()) { return Optional.of( override.trim() ); }
 
-		// 1) sun.java.command에서 main class
+		// sun.java.command에서 main class
 		try {
 			String cmd = System.getProperty( "sun.java.command" );
 
@@ -198,7 +219,7 @@ public final class ProjectDefaults {
 
 		} catch (Throwable ignore) {}
 
-		// 2) -jar 실행이면 manifest의 Main-Class 시도 (가능한 범위에서)
+		// -jar 실행이면 manifest의 Main-Class 시도 (가능한 범위에서)
 		try {
 			// sun.java.command가 jar 경로인 경우가 많음
 			String cmd = System.getProperty( "sun.java.command" );
@@ -228,7 +249,7 @@ public final class ProjectDefaults {
 
 		} catch (Throwable ignore) {}
 
-		// 3) src/main/java에서 앵커 탐색 (SpringBootApplication / main / *Application.java)
+		// src/main/java에서 앵커 탐색 (SpringBootApplication / main / *Application.java)
 		Path srcMainJava = projectRoot.resolve( "src/main/java" );
 		Optional<String> fromSrc = detectBasePackageFromSources( srcMainJava );
 		if (fromSrc.isPresent())
@@ -302,7 +323,14 @@ public final class ProjectDefaults {
 
 	}
 
-	/** 슬래시 정규화(백슬래시→슬래시) */
+	/**
+	 * Normalizes a path-like string to slash-separated form.
+	 *
+	 * @param v
+	 *            the input value
+	 * 
+	 * @return the normalized slash-separated value
+	 */
 	public static String slash(
 		String v
 	) {
@@ -311,7 +339,14 @@ public final class ProjectDefaults {
 
 	}
 
-	/** 패키지 표기(슬래시→닷) */
+	/**
+	 * Normalizes a path-like string to dot-separated package form.
+	 *
+	 * @param v
+	 *            the input value
+	 * 
+	 * @return the normalized package-style value
+	 */
 	public static String dot(
 		String v
 	) {
@@ -331,6 +366,7 @@ public final class ProjectDefaults {
 
 	private ProjectDefaults() {}
 
+	/** java 버전탐지 */
 	public static final class JavaLevel {
 
 		/** 우선순위: 시스템 프로퍼티 > 빌드파일(pom/gradle) > 현재 JVM 런타임 */
@@ -492,7 +528,11 @@ public final class ProjectDefaults {
 				case 19 -> ParserConfiguration.LanguageLevel.JAVA_19;
 				case 20 -> ParserConfiguration.LanguageLevel.JAVA_20;
 				case 21 -> ParserConfiguration.LanguageLevel.JAVA_21;
-				default -> ParserConfiguration.LanguageLevel.JAVA_21; // 최신 상한선으로 고정
+				case 22 -> ParserConfiguration.LanguageLevel.JAVA_22;
+				case 23 -> ParserConfiguration.LanguageLevel.JAVA_23;
+				case 24 -> ParserConfiguration.LanguageLevel.JAVA_24;
+				case 25 -> ParserConfiguration.LanguageLevel.JAVA_25;
+				default -> ParserConfiguration.LanguageLevel.JAVA_25; // 최신 상한선으로 고정
 
 			};
 

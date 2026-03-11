@@ -5,6 +5,10 @@ import java.util.List;
 import java.util.stream.Stream;
 
 
+/**
+ * Utility methods for converting between route paths, handler method names,
+ * enum values, and simple type classification helpers.
+ */
 public class RouteUtil {
 
 	/**
@@ -15,6 +19,19 @@ public class RouteUtil {
 	 *            메소드 이름
 	 * 
 	 * @return 설정된 경로 문자열
+	 */
+	/**
+	 * Converts a camel-case method name into a slash-separated route path.
+	 * <p>Example: {@code apiMenu -> /api/menu}</p>
+	 * 메소드 이름을 기반으로 경로를 설정합니다.
+	 * <p>예: "apiMenu" -> "/api/menu", "oauth2" -> "/oauth2"</p>
+	 * 
+	 * @param methodName
+	 *            the method name
+	 *            메소드 이름
+	 * 
+	 * @return the generated route path
+	 *         설정된 경로 문자열
 	 */
 	public static String convertMethodNameToPath(
 		String methodName
@@ -34,13 +51,15 @@ public class RouteUtil {
 	}
 
 	/**
-	 * 메소드 이름을 기반으로 경로를 설정합니다.
-	 * 예: "/api/menu" -> "apiMenu", "/oauth2" -> "oauth2"
+	 * Converts a separated path string into a camel-case method name.
+	 * <p>Example: {@code /api/menu -> apiMenu}</p>
 	 *
-	 * @param methodName
-	 *            메소드 이름
+	 * @param url
+	 *            the source path
+	 * @param separator
+	 *            the path separator to split on
 	 * 
-	 * @return 설정된 경로 문자열
+	 * @return the generated method name
 	 */
 	public static String convertPathToMethodName(
 		String url, String separator
@@ -73,13 +92,12 @@ public class RouteUtil {
 	}
 
 	/**
-	 * 메소드 이름을 기반으로 경로를 설정합니다.
-	 * 예: "/api/menu" -> "apiMenu", "/oauth2" -> "oauth2"
+	 * Converts a slash-separated path into a camel-case method name.
 	 *
-	 * @param methodName
-	 *            메소드 이름
+	 * @param url
+	 *            the source path
 	 * 
-	 * @return 설정된 경로 문자열
+	 * @return the generated method name
 	 */
 	public static String convertPathToMethodName(
 		String url
@@ -89,6 +107,14 @@ public class RouteUtil {
 
 	}
 
+	/**
+	 * Returns all enum constant names of the given enum type.
+	 *
+	 * @param clazz
+	 *            the enum class
+	 * 
+	 * @return the enum constant names
+	 */
 	public static List<String> parserEnumValues(
 		Class<?> clazz
 	) {
@@ -100,7 +126,14 @@ public class RouteUtil {
 	}
 
 	/**
-	 * 주어진 타입이 POJO인지 확인
+	 * Returns whether the given type should be treated as a user-defined POJO.
+	 * <p>This is a lightweight heuristic used by parser/generator code and is not intended
+	 * to be a strict domain-model classifier.</p>
+	 *
+	 * @param type
+	 *            the target type
+	 * 
+	 * @return {@code true} if the type is treated as a POJO
 	 */
 	public static boolean isPojo(
 		Class<?> type
