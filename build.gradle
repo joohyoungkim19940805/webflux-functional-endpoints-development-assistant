@@ -48,10 +48,6 @@ dependencies {
     compileOnly 'org.jspecify:jspecify:1.0.0'
 }
 
-def isCentralPublish = gradle.startParameter.taskNames.any { t ->
-	t.toLowerCase().contains("mavencentral")
-}
-
 tasks.withType(JavaExec) {
     jvmArgs += '--add-exports'
     jvmArgs += 'jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED'
@@ -86,10 +82,9 @@ mavenPublishing {
   
     // Central Portal 배포 타겟 + 서명 (Central 요구사항)
     publishToMavenCentral()     // 자동 릴리즈까지 하려면 publishToMavenCentral(true)
-	if (isCentralPublish) {
-		signAllPublications()
-	}
-
+		
+	signAllPublications()
+    
     // 좌표(GAV)
     coordinates(project.group, 'webflux-fe-dev-assistant', project.version)
 
