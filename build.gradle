@@ -105,7 +105,7 @@ mavenPublishing {
                 id = 'joohyoungkim19940805'
                 name = '김주형'
                 email = 'oozu1994@gmail.com'
-                url = 'https://github.com/joohyoungkim19940805'
+                url = 'https://byeolnaerim.com'
             }
         }
         scm {
