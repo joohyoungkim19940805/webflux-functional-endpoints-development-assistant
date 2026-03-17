@@ -366,11 +366,20 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 	public Mono<Boolean> runGenerateTask() {
 
 		return Mono.fromCallable( () -> {
-			// 1) 기존 generate 로직으로 JSON 문자열 구성
-			String json = generateSwaggerJson(); // <- 기존 함수 그대로
-			// 2) 실제 파일에 "변경 시에만" 기록
-			Path out = Paths.get( config.swaggerOutputFile );
-			return writeIfChanged( out, json.getBytes( StandardCharsets.UTF_8 ) );
+
+			try {
+
+				// 1) 기존 generate 로직으로 JSON 문자열 구성
+				String json = generateSwaggerJson(); // <- 기존 함수 그대로
+				// 2) 실제 파일에 "변경 시에만" 기록
+				Path out = Paths.get( config.swaggerOutputFile );
+				return writeIfChanged( out, json.getBytes( StandardCharsets.UTF_8 ) );
+
+			} catch (Exception e) {
+				e.printStackTrace();
+				return false;
+
+			}
 
 		} ).subscribeOn( Schedulers.boundedElastic() );
 
@@ -400,34 +409,32 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	/** Swagger JSON 생성 */
-	private String generateSwaggerJson() {
+	/**
+	 * Swagger JSON 생성
+	 * 
+	 * @throws Exception
+	 */
+	private String generateSwaggerJson() throws Exception {
 
-		try {
-			List<RouteInfo> routeInfos = extractRouteInfos(); // RouteInfo 리스트 추출
-			routeInfos
-				.sort(
-					Comparator
-						.comparing( RouteInfo::getUrl )
-						.thenComparing( RouteInfo::getHttpMethod )
-				);
 
-			String swaggerJson = SwaggerGenerator.generateSwaggerJson( routeInfos ); // Swagger JSON 생성
-			return swaggerJson;
+		List<RouteInfo> routeInfos = extractRouteInfos(); // RouteInfo 리스트 추출
+		routeInfos
+			.sort(
+				Comparator
+					.comparing( RouteInfo::getUrl )
+					.thenComparing( RouteInfo::getHttpMethod )
+			);
 
-			// try (FileWriter writer = new FileWriter( config.swaggerOutputFile )) {
-			// writer.write( swaggerJson );
-			// System.out.println( "Swagger JSON file updated: " + config.swaggerOutputFile );
-			// return swaggerJson;
-			//
-			// }
+		String swaggerJson = SwaggerGenerator.generateSwaggerJson( routeInfos ); // Swagger JSON 생성
+		return swaggerJson;
 
-		} catch (Exception e) {
-			e.printStackTrace();
+		// try (FileWriter writer = new FileWriter( config.swaggerOutputFile )) {
+		// writer.write( swaggerJson );
+		// System.out.println( "Swagger JSON file updated: " + config.swaggerOutputFile );
+		// return swaggerJson;
+		//
+		// }
 
-		}
-
-		return "";
 
 	}
 
