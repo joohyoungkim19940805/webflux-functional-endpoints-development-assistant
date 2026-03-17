@@ -516,7 +516,7 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 			for (CtInvocation<?> httpCall : httpCalls) {
 				RouteInfo routeInfo = RouteParser.extractRouteInfoFromHttpCall( httpCall, routerMethod.getSimpleName() );
-				HandlerParser handlerParser = new HandlerParser();
+				HandlerParser handlerParser = new HandlerParser( model );
 				routeInfo
 					.setHandlerInfo(
 						handlerParser

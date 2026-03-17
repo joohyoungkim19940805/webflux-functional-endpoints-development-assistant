@@ -542,7 +542,7 @@ public class SwaggerGenerator {
 				.stream()
 				.filter( inv -> HTTP_METHODS.contains( inv.getExecutable().getSimpleName() ) )
 				.toList();
-			HandlerParser handlerParser = new HandlerParser();
+			HandlerParser handlerParser = new HandlerParser( model );
 
 			for (CtInvocation<?> httpCall : httpCalls) {
 				RouteInfo info = RouteParser.extractRouteInfoFromHttpCall( httpCall, routeMethodName );

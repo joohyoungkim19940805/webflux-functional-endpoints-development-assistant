@@ -53,15 +53,17 @@ import spoon.reflect.visitor.filter.TypeFilter;
  */
 public class HandlerParser {
 
-	// private final CtModel model;
+	private final CtModel model;
+
 	//
-	// public HandlerParser(
-	// CtModel model
-	// ) {
-	//
-	// this.model = model;
-	//
-	// }
+	public HandlerParser(
+							CtModel model
+	) {
+
+		this.model = model;
+
+	}
+
 	// HandlerParser 내에 추가할 필드
 	private Map<String, Boolean> queryParamsVars = new HashMap<>();
 
@@ -170,6 +172,78 @@ public class HandlerParser {
 
 	}
 
+	private List<CtMethod<?>> resolveCandidateMethods(
+		CtExecutableReferenceExpression<?, ?> methodRef
+	) {
+
+		if (methodRef == null) {
+			return List.of();
+
+		}
+
+		CtExecutableReference<?> execRef = methodRef.getExecutable();
+		List<CtMethod<?>> direct = resolveCandidateMethods( execRef );
+
+		if (! direct.isEmpty()) {
+			return direct;
+
+		}
+
+		if (model == null || execRef == null) {
+			return List.of();
+
+		}
+
+		String methodName = execRef.getSimpleName();
+
+		if (methodName == null || methodName.isBlank()) {
+			return List.of();
+
+		}
+
+		String targetQualifiedName = null;
+		String targetSimpleName = null;
+
+		CtExpression<?> targetExpr = methodRef.getTarget();
+
+		if (targetExpr != null && targetExpr.getType() != null) {
+			targetQualifiedName = targetExpr.getType().getQualifiedName();
+			targetSimpleName = targetExpr.getType().getSimpleName();
+
+		} else if (execRef.getDeclaringType() != null) {
+			targetQualifiedName = execRef.getDeclaringType().getQualifiedName();
+			targetSimpleName = execRef.getDeclaringType().getSimpleName();
+
+		}
+
+		final String _targetQualifiedName = targetQualifiedName;
+		final String _targetSimpleName = targetSimpleName;
+		final String _methodName = methodName;
+
+		return model
+			.getElements( new TypeFilter<>( CtMethod.class ) )
+			.stream()
+			.filter( m -> m.getSimpleName().equals( _methodName ) )
+			.filter( m -> {
+				CtType<?> parentType = m.getParent( CtType.class );
+
+				if (parentType == null) {
+					return false;
+
+				}
+
+				if (_targetQualifiedName != null && _targetQualifiedName.equals( parentType.getQualifiedName() )) {
+					return true;
+
+				}
+
+				return _targetSimpleName != null && _targetSimpleName.equals( parentType.getSimpleName() );
+
+			} )
+			.collect( Collectors.toList() );
+
+	}
+
 	private boolean hasServerRequestParam(
 		CtMethod<?> method
 	) {
@@ -190,14 +264,7 @@ public class HandlerParser {
 
 		}
 
-		CtExecutableReference<?> executableRef = methodRef.getExecutable();
-
-		if (executableRef == null) {
-			return;
-
-		}
-
-		List<CtMethod<?>> candidates = resolveCandidateMethods( executableRef );
+		List<CtMethod<?>> candidates = resolveCandidateMethods( methodRef );
 
 		if (candidates.isEmpty()) {
 			return;
@@ -364,24 +431,14 @@ public class HandlerParser {
 					}
 
 				} else if (arg instanceof CtExecutableReferenceExpression<?, ?> methodRef) {
-					// 메서드 참조 형태도 동일하게 처리하되 null 방어
-					CtExecutableReference<?> ref = ((CtExecutableReferenceExpression<?, ?>) methodRef).getExecutable();
+					parseMethodReferenceHandler( methodRef, handlerInfo, routeName );
 
-					if (ref != null && ref.getDeclaringType() != null) {
-						parseMethodReferenceHandler(
-							(CtExecutableReferenceExpression<?, ?>) methodRef,
-							handlerInfo,
-							routeName
-						);
+					List<CtMethod<?>> candidates = resolveCandidateMethods( methodRef );
 
-						List<CtMethod<?>> candidates = resolveCandidateMethods( ref );
+					for (CtMethod<?> m : candidates) {
 
-						for (CtMethod<?> m : candidates) {
-
-							if (hasServerRequestParam( m ) && m.getBody() != null) {
-								parseHandlerBody( m.getBody(), handlerInfo, routeName );
-
-							}
+						if (hasServerRequestParam( m ) && m.getBody() != null) {
+							parseHandlerBody( m.getBody(), handlerInfo, routeName );
 
 						}
 
@@ -1995,7 +2052,7 @@ public class HandlerParser {
 
 			for (CtInvocation<?> httpCall : httpCalls) {
 				RouteInfo info = RouteParser.extractRouteInfoFromHttpCall( httpCall, routeMethodName );
-				HandlerParser aaa = new HandlerParser();
+				HandlerParser aaa = new HandlerParser( model );
 				HandlerInfo handlerInfo = aaa.parseHandler( info.getHandlerInfoCtExpression(), RouteUtil.convertPathToMethodName( info.getUrl() ) );
 				CtExpression<?> xxx = info.getHandlerInfoCtExpression();
 
