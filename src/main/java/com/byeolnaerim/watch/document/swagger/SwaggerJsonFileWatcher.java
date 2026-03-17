@@ -1,13 +1,24 @@
 package com.byeolnaerim.watch.document.swagger;
 
 
+import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.CodeSource;
+import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Stream;
+import org.benf.cfr.reader.api.CfrDriver;
 import com.byeolnaerim.watch.AbstractWatcher;
 import com.byeolnaerim.watch.ProjectDefaults;
 import com.byeolnaerim.watch.RouteUtil;
@@ -58,6 +69,12 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 		private final ProjectMode projectMode;
 
+		private final List<String> decompileJarPaths;
+
+		private final List<String> sourceClasspath;
+
+		private final List<Class<?>> decompileJarClasses;
+
 		private Config(
 						Builder b
 		) {
@@ -75,6 +92,9 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 			this.projectMode = (b.projectMode != null) ? b.projectMode : ProjectMode.FUNCTIONAL_ENDPOINT;
 
+			this.decompileJarPaths = List.copyOf( b.decompileJarPaths );
+			this.sourceClasspath = List.copyOf( b.sourceClasspath );
+			this.decompileJarClasses = List.copyOf( b.decompileJarClasses );
 
 		}
 
@@ -99,6 +119,27 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 		}
 
+		/** decompileJarPaths */
+		public List<String> decompileJarPaths() {
+
+			return decompileJarPaths;
+
+		}
+
+		/** sourceClasspath */
+		public List<String> sourceClasspath() {
+
+			return sourceClasspath;
+
+		}
+
+		/** decompileJarClasses */
+		public List<Class<?>> decompileJarClasses() {
+
+			return decompileJarClasses;
+
+		}
+
 		/**
 		 * Creates a new Swagger watcher configuration builder.
 		 *
@@ -120,6 +161,12 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 			private String swaggerOutputFile = ProjectDefaults.SWAGGER_OUTPUT_FILE;
 
 			private ProjectMode projectMode = ProjectMode.FUNCTIONAL_ENDPOINT;
+
+			private final List<String> decompileJarPaths = new ArrayList<>();
+
+			private final List<String> sourceClasspath = new ArrayList<>();
+
+			private final List<Class<?>> decompileJarClasses = new ArrayList<>();
 
 			/**
 			 * Sets the source directory to watch and analyze.
@@ -168,6 +215,113 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 			) {
 
 				this.projectMode = (mode != null) ? mode : ProjectMode.FUNCTIONAL_ENDPOINT;
+				return this;
+
+			}
+
+
+			/**
+			 * Adds a decompile jar.
+			 *
+			 * @param jarPath
+			 *            jar path
+			 * 
+			 * @return this builder
+			 */
+			public Builder addDecompileJar(
+				String jarPath
+			) {
+
+				this.decompileJarPaths.add( jarPath );
+				return this;
+
+			}
+
+			/**
+			 * Replaces the decompile jar.
+			 *
+			 * @param jarPaths
+			 *            jar paths
+			 * 
+			 * @return this builder
+			 */
+			public Builder decompileJars(
+				List<String> jarPaths
+			) {
+
+				this.decompileJarPaths.clear();
+				this.decompileJarPaths.addAll( jarPaths );
+				return this;
+
+			}
+
+			/**
+			 * Adds a source classpath.
+			 *
+			 * @param classpathEntry
+			 *            classpathEntry
+			 * 
+			 * @return this builder
+			 */
+			public Builder addSourceClasspath(
+				String classpathEntry
+			) {
+
+				this.sourceClasspath.add( classpathEntry );
+				return this;
+
+			}
+
+			/**
+			 * Replaces the source classpath.
+			 *
+			 * @param entries
+			 *            classpath entries
+			 * 
+			 * @return this builder
+			 */
+			public Builder sourceClasspath(
+				List<String> entries
+			) {
+
+				this.sourceClasspath.clear();
+				this.sourceClasspath.addAll( entries );
+				return this;
+
+			}
+
+			/**
+			 * Adds a decompile jar marker class.
+			 * Any class loaded from the target external jar is acceptable.
+			 *
+			 * @param markerClass
+			 *            class loaded from the target jar
+			 *
+			 * @return this builder
+			 */
+			public Builder addDecompileJarClass(
+				Class<?> markerClass
+			) {
+
+				this.decompileJarClasses.add( markerClass );
+				return this;
+
+			}
+
+			/**
+			 * Replaces the decompile jar marker classes.
+			 *
+			 * @param markerClasses
+			 *            marker classes loaded from target jars
+			 *
+			 * @return this builder
+			 */
+			public Builder decompileJarClasses(
+				List<Class<?>> markerClasses
+			) {
+
+				this.decompileJarClasses.clear();
+				this.decompileJarClasses.addAll( markerClasses );
 				return this;
 
 			}
@@ -281,9 +435,59 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 	private List<RouteInfo> extractRouteInfos() {
 
 		Launcher launcher = new Launcher();
-		launcher.addInputResource( config.watchDirectory );
+		launcher.addInputResource( config.watchDirectory() );
 		launcher.getEnvironment().setAutoImports( true );
-		launcher.getEnvironment().setNoClasspath( true );
+
+		Set<String> effectiveSourceClasspath = new LinkedHashSet<>();
+
+		if (config.sourceClasspath() != null && ! config.sourceClasspath().isEmpty()) {
+			effectiveSourceClasspath.addAll( config.sourceClasspath() );
+
+		}
+
+		// marker class가 로드된 실제 위치(jar 또는 classes dir)를 classpath에도 반영
+		if (config.decompileJarClasses() != null && ! config.decompileJarClasses().isEmpty()) {
+
+			for (Class<?> markerClass : config.decompileJarClasses()) {
+				Path location = resolveClassLocation( markerClass );
+				effectiveSourceClasspath.add( location.toString() );
+
+			}
+
+		}
+
+		// path로 직접 추가한 jar도 classpath에 반영
+		if (config.decompileJarPaths() != null && ! config.decompileJarPaths().isEmpty()) {
+			effectiveSourceClasspath.addAll( config.decompileJarPaths() );
+
+		}
+
+		if (! effectiveSourceClasspath.isEmpty()) {
+			launcher.getEnvironment().setNoClasspath( false );
+			launcher
+				.getEnvironment()
+				.setSourceClasspath(
+					effectiveSourceClasspath.toArray( String[]::new )
+				);
+
+		} else {
+			launcher.getEnvironment().setNoClasspath( true );
+
+		}
+
+		// 직접 경로로 받은 jar는 디컴파일해서 소스 입력으로 추가
+		for (String jarPath : config.decompileJarPaths()) {
+			Path decompiledSourceDir = decompileJarToSourceDir( jarPath );
+			launcher.addInputResource( decompiledSourceDir.toString() );
+
+		}
+
+		// marker class로 받은 외부 jar/classes 위치도 입력으로 추가
+		for (Class<?> markerClass : config.decompileJarClasses()) {
+			addExternalInputResourceFromMarkerClass( launcher, markerClass );
+
+		}
+
 		launcher.buildModel();
 
 		CtModel model = launcher.getModel();
@@ -327,6 +531,154 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
+	private void addExternalInputResourceFromMarkerClass(
+		Launcher launcher, Class<?> markerClass
+	) {
+
+		Path location = resolveClassLocation( markerClass );
+
+		if (Files.isDirectory( location )) {
+			launcher.addInputResource( location.toString() );
+			return;
+
+		}
+
+		String fileName = location.getFileName() == null ? "" : location.getFileName().toString().toLowerCase();
+
+		if (! fileName.endsWith( ".jar" )) {
+			throw new IllegalArgumentException(
+				"Marker class location is neither a directory nor a jar file: " + location + " (class=" + markerClass.getName() + ")"
+			);
+
+		}
+
+		Path decompiledSourceDir = decompileJarToSourceDir( location.toString() );
+		launcher.addInputResource( decompiledSourceDir.toString() );
+
+	}
+
+	private Path resolveClassLocation(
+		Class<?> markerClass
+	) {
+
+		if (markerClass == null) {
+			throw new IllegalArgumentException( "markerClass must not be null" );
+
+		}
+
+		ProtectionDomain protectionDomain = markerClass.getProtectionDomain();
+
+		if (protectionDomain == null) {
+			throw new IllegalStateException( "ProtectionDomain is null for class: " + markerClass.getName() );
+
+		}
+
+		CodeSource codeSource = protectionDomain.getCodeSource();
+
+		if (codeSource == null || codeSource.getLocation() == null) {
+			throw new IllegalStateException(
+				"CodeSource location is null for class: " + markerClass
+					.getName() + ". If this runs from a packaged Spring Boot fat jar, pass addDecompileJar(\"/real/path/to/dependency.jar\") instead."
+			);
+
+		}
+
+		try {
+			URI uri = codeSource.getLocation().toURI();
+
+			if (uri.getScheme() != null && ! "file".equalsIgnoreCase( uri.getScheme() )) {
+				throw new IllegalStateException(
+					"Unsupported marker class location URI scheme: " + uri + " for class: " + markerClass
+						.getName() + ". If this runs from a packaged Spring Boot fat jar, pass addDecompileJar(\"/real/path/to/dependency.jar\") instead."
+				);
+
+			}
+
+			return Paths.get( uri ).toAbsolutePath().normalize();
+
+		} catch (Exception e) {
+			throw new RuntimeException( "Failed to resolve class location for: " + markerClass.getName(), e );
+
+		}
+
+	}
+
+	private Path decompileJarToSourceDir(
+		String jarPath
+	) {
+
+		try {
+			Path jar = Paths.get( jarPath ).toAbsolutePath().normalize();
+
+			if (! Files.exists( jar )) { throw new IllegalArgumentException( "Decompile jar not found: " + jar ); }
+
+			String fileName = jar.getFileName().toString();
+			String baseName = stripExtension( fileName );
+			String hash = Integer.toHexString( jar.toString().hashCode() );
+			String dirName = (baseName + "-" + hash).replaceAll( "[^a-zA-Z0-9._-]", "_" );
+
+			Path outputDir = Paths.get( "build", "spoon-decompiled", dirName );
+
+			recreateDirectory( outputDir );
+
+			Map<String, String> options = new HashMap<>();
+			options.put( "outputdir", outputDir.toString() );
+
+			if (config.sourceClasspath() != null && ! config.sourceClasspath().isEmpty()) {
+				options.put( "extraclasspath", String.join( File.pathSeparator, config.sourceClasspath() ) );
+
+			}
+
+			CfrDriver driver = new CfrDriver.Builder()
+				.withOptions( options )
+				.build();
+
+			driver.analyse( List.of( jar.toString() ) );
+
+			return outputDir;
+
+		} catch (IOException e) {
+			throw new RuntimeException( "Failed to prepare decompile output directory for jar: " + jarPath, e );
+
+		} catch (Exception e) {
+			throw new RuntimeException( "Failed to decompile jar: " + jarPath, e );
+
+		}
+
+	}
+
+	private void recreateDirectory(
+		Path dir
+	)
+		throws IOException {
+
+		if (Files.exists( dir )) {
+			List<Path> paths;
+
+			try (Stream<Path> walk = Files.walk( dir )) {
+				paths = walk.sorted( Comparator.reverseOrder() ).toList();
+
+			}
+
+			for (Path path : paths) {
+				Files.deleteIfExists( path );
+
+			}
+
+		}
+
+		Files.createDirectories( dir );
+
+	}
+
+	private String stripExtension(
+		String fileName
+	) {
+
+		int idx = fileName.lastIndexOf( '.' );
+		return idx >= 0 ? fileName.substring( 0, idx ) : fileName;
+
+	}
 	// public static void main(
 	// String[] args
 	// ) {
