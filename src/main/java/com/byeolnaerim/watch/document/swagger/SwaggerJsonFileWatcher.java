@@ -437,6 +437,7 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 		Launcher launcher = new Launcher();
 		launcher.addInputResource( config.watchDirectory() );
 		launcher.getEnvironment().setAutoImports( true );
+		launcher.getEnvironment().setNoClasspath( true );
 
 		Set<String> effectiveSourceClasspath = new LinkedHashSet<>();
 
@@ -463,15 +464,11 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 		}
 
 		if (! effectiveSourceClasspath.isEmpty()) {
-			launcher.getEnvironment().setNoClasspath( false );
 			launcher
 				.getEnvironment()
 				.setSourceClasspath(
 					effectiveSourceClasspath.toArray( String[]::new )
 				);
-
-		} else {
-			launcher.getEnvironment().setNoClasspath( true );
 
 		}
 

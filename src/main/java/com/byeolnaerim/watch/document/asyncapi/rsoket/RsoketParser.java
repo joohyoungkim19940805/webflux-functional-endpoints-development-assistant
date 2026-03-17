@@ -538,7 +538,7 @@ public class RsoketParser {
 				fieldInfo.setExample( RouteUtil.parserEnumValues( fieldInfo.getType() ).toString() );
 
 			} else if (fieldInfo
-				.getType() != null && (fieldInfo.getType().isRecord() || (fieldInfo.getType().getPackageName() != null && fieldInfo.getType().getPackageName().startsWith( "com.starbearing" )))) {
+				.getType() != null && (fieldInfo.getType().isRecord() || (fieldInfo.getType().getPackageName() != null && RouteUtil.isPojo( fieldInfo.getType() )))) {
 				parseClassFields( wrapperRef.getFactory().Type().createReference( fieldInfo.getType() ), fieldInfo );
 
 			}

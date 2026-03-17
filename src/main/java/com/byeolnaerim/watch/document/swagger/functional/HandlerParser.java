@@ -89,6 +89,7 @@ public class HandlerParser {
 		pathsParamsVars.clear();
 		processedTypes.clear();
 		HandlerInfo handlerInfo = new HandlerInfo();
+		hasResponseBodyAnnotationOverride = false;
 
 		// handlerExpression이 람다인지 메서드 참조인지 판별
 		if (handlerExpression instanceof CtLambda<?> lambda) {
@@ -1632,9 +1633,8 @@ public class HandlerParser {
 					);
 
 				// ;
-			} else if (fieldInfo.getType().isRecord() || fieldInfo.getType().getPackageName().startsWith( "com.starbearing" )) {
+			} else if (fieldInfo.getType().isRecord() || RouteUtil.isPojo( fieldInfo.getType() )) {
 
-				// System.out.println( fieldInfo.getType() );
 				parseClassFields( wrapperRef.getFactory().Type().createReference( fieldInfo.getType() ), fieldInfo );
 
 			}
