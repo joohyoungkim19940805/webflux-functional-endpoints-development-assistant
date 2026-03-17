@@ -118,37 +118,97 @@ public class HandlerParser {
 
 	}
 
+	private List<CtMethod<?>> resolveCandidateMethods(
+		CtExecutableReference<?> execRef
+	) {
+
+		if (execRef == null) {
+			return List.of();
+
+		}
+
+		List<CtMethod<?>> candidates = new ArrayList<>();
+
+		// executable declaration이 직접 잡히는 경우 우선 사용
+		try {
+
+			if (execRef.getExecutableDeclaration() instanceof CtMethod<?> method) {
+				candidates.add( method );
+
+			}
+
+		} catch (Exception ignore) {
+
+			// noClasspath / external reference 에서는 여기서 실패할 수 있음
+		}
+
+		// declaring type이 있으면 type declaration에서도 후보 수집
+		CtTypeReference<?> declaringTypeRef = execRef.getDeclaringType();
+
+		if (declaringTypeRef == null) {
+			return candidates;
+
+		}
+
+		CtType<?> declaringType = declaringTypeRef.getTypeDeclaration();
+
+		if (declaringType == null) {
+			return candidates;
+
+		}
+
+		for (CtMethod<?> method : declaringType.getMethods()) {
+
+			if (method.getSimpleName().equals( execRef.getSimpleName() )) {
+				candidates.add( method );
+
+			}
+
+		}
+
+		return candidates;
+
+	}
+
+	private boolean hasServerRequestParam(
+		CtMethod<?> method
+	) {
+
+		return method != null && method
+			.getParameters()
+			.stream()
+			.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
+
+	}
+
 	private void parseMethodReferenceHandler(
 		CtExecutableReferenceExpression<?, ?> methodRef, HandlerInfo handlerInfo, String routeName
 	) {
 
+		if (methodRef == null) {
+			return;
+
+		}
+
 		CtExecutableReference<?> executableRef = methodRef.getExecutable();
 
-		// 메서드 참조에서 참조하는 메서드를 찾아야 한다.
-		// model 내에서 해당 메서드 정의(CtMethod)를 찾는다.
-		CtType<?> declaringType = executableRef.getDeclaringType().getTypeDeclaration();
+		if (executableRef == null) {
+			return;
 
-		if (declaringType != null) {
-			// 메서드 이름과 파라미터 타입 등을 통해 CtMethod를 찾는다.
-			List<CtMethod<?>> candidates = declaringType
-				.getMethods()
-				.stream()
-				.filter( m -> {
-					m.getReference().getActualTypeArguments();
-					return m.getSimpleName().equals( executableRef.getSimpleName() );
+		}
 
-				} )
-				// 파라미터 타입 매칭 로직 필요. 여기서는 단순히 이름 맞추는 정도로 가정
-				.collect( Collectors.toList() );
+		List<CtMethod<?>> candidates = resolveCandidateMethods( executableRef );
 
-			// 여기서는 매칭되는 첫 번째 메서드를 사용
-			if (! candidates.isEmpty()) {
-				CtMethod<?> method = candidates.get( 0 );
+		if (candidates.isEmpty()) {
+			return;
 
-				if (method.getBody() != null) {
-					parseHandlerBody( method.getBody(), handlerInfo, routeName );
+		}
 
-				}
+		for (CtMethod<?> method : candidates) {
+
+			if (method.getBody() != null) {
+				parseHandlerBody( method.getBody(), handlerInfo, routeName );
+				return;
 
 			}
 
@@ -257,30 +317,12 @@ public class HandlerParser {
 			CtExecutableReference<?> execRef = inv.getExecutable();
 
 			if (execRef != null) {
-				CtType<?> declaringType = null;
+				List<CtMethod<?>> candidateMethods = resolveCandidateMethods( execRef );
 
-				if (execRef.getDeclaringType() != null) {
-					declaringType = execRef.getDeclaringType().getTypeDeclaration();
+				for (CtMethod<?> method : candidateMethods) {
 
-				}
-
-				if (declaringType != null) {
-					List<CtMethod<?>> candidateMethods = declaringType
-						.getMethods()
-						.stream()
-						.filter( m -> m.getSimpleName().equals( execRef.getSimpleName() ) )
-						.collect( Collectors.toList() );
-
-					for (CtMethod<?> method : candidateMethods) {
-						boolean hasServerRequestParam = method
-							.getParameters()
-							.stream()
-							.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
-
-						if (hasServerRequestParam && method.getBody() != null) {
-							parseHandlerBody( method.getBody(), handlerInfo, routeName );
-
-						}
+					if (hasServerRequestParam( method ) && method.getBody() != null) {
+						parseHandlerBody( method.getBody(), handlerInfo, routeName );
 
 					}
 
@@ -303,26 +345,14 @@ public class HandlerParser {
 
 						for (CtInvocation<?> innerInv : innerInvs) {
 							CtExecutableReference<?> innerExecRef = innerInv.getExecutable();
-							if (innerExecRef == null || innerExecRef.getDeclaringType() == null)
+							if (innerExecRef == null)
 								continue;
 
-							CtType<?> innerDeclaringType = innerExecRef.getDeclaringType().getTypeDeclaration();
-							if (innerDeclaringType == null)
-								continue;
-
-							List<CtMethod<?>> innerCandidates = innerDeclaringType
-								.getMethods()
-								.stream()
-								.filter( m -> m.getSimpleName().equals( innerExecRef.getSimpleName() ) )
-								.collect( Collectors.toList() );
+							List<CtMethod<?>> innerCandidates = resolveCandidateMethods( innerExecRef );
 
 							for (CtMethod<?> m : innerCandidates) {
-								boolean hasServerRequestParam = m
-									.getParameters()
-									.stream()
-									.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
 
-								if (hasServerRequestParam && m.getBody() != null) {
+								if (hasServerRequestParam( m ) && m.getBody() != null) {
 									parseHandlerBody( m.getBody(), handlerInfo, routeName );
 
 								}
@@ -338,34 +368,18 @@ public class HandlerParser {
 					CtExecutableReference<?> ref = ((CtExecutableReferenceExpression<?, ?>) methodRef).getExecutable();
 
 					if (ref != null && ref.getDeclaringType() != null) {
-						// 1) 기존 처리
 						parseMethodReferenceHandler(
 							(CtExecutableReferenceExpression<?, ?>) methodRef,
 							handlerInfo,
 							routeName
 						);
 
-						// 2) NEW: 메서드 참조가 가리키는 선언부를 찾아 재귀 파싱
-						CtType<?> declaringType = ref.getDeclaringType().getTypeDeclaration();
+						List<CtMethod<?>> candidates = resolveCandidateMethods( ref );
 
-						if (declaringType != null) {
-							// 이름 기준 후보 수집(오버로드 고려 시 시그니처 비교로 보강 가능)
-							List<CtMethod<?>> candidates = declaringType
-								.getMethods()
-								.stream()
-								.filter( m -> m.getSimpleName().equals( ref.getSimpleName() ) )
-								.collect( Collectors.toList() );
+						for (CtMethod<?> m : candidates) {
 
-							for (CtMethod<?> m : candidates) {
-								boolean hasServerRequestParam = m
-									.getParameters()
-									.stream()
-									.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
-
-								if (hasServerRequestParam && m.getBody() != null) {
-									parseHandlerBody( m.getBody(), handlerInfo, routeName );
-
-								}
+							if (hasServerRequestParam( m ) && m.getBody() != null) {
+								parseHandlerBody( m.getBody(), handlerInfo, routeName );
 
 							}
 
