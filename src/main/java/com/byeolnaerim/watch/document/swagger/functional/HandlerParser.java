@@ -216,31 +216,36 @@ public class HandlerParser {
 
 		}
 
-		final String _targetQualifiedName = targetQualifiedName;
-		final String _targetSimpleName = targetSimpleName;
-		final String _methodName = methodName;
+		List<CtMethod<?>> result = new ArrayList<>();
 
-		return model
-			.getElements( new TypeFilter<>( CtMethod.class ) )
-			.stream()
-			.filter( m -> m.getSimpleName().equals( _methodName ) )
-			.filter( m -> {
-				CtType<?> parentType = m.getParent( CtType.class );
+		for (CtMethod<?> m : model.getElements( new TypeFilter<>( CtMethod.class ) )) {
 
-				if (parentType == null) {
-					return false;
+			if (! m.getSimpleName().equals( methodName )) {
+				continue;
 
-				}
+			}
 
-				if (_targetQualifiedName != null && _targetQualifiedName.equals( parentType.getQualifiedName() )) {
-					return true;
+			CtType<?> parentType = m.getParent( CtType.class );
 
-				}
+			if (parentType == null) {
+				continue;
 
-				return _targetSimpleName != null && _targetSimpleName.equals( parentType.getSimpleName() );
+			}
 
-			} )
-			.collect( Collectors.toList() );
+			if (targetQualifiedName != null && targetQualifiedName.equals( parentType.getQualifiedName() )) {
+				result.add( m );
+				continue;
+
+			}
+
+			if (targetSimpleName != null && targetSimpleName.equals( parentType.getSimpleName() )) {
+				result.add( m );
+
+			}
+
+		}
+
+		return result;
 
 	}
 
