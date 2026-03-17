@@ -272,22 +272,29 @@ public class EntityFileWatcher extends AbstractWatcher {
 		CtAnnotation<?> ann, String key
 	) {
 
-		if (ann == null)
+		if (ann == null || key == null || key.isBlank())
 			return null;
 
-		CtExpression<?> expr = ann.getValue( key );
-		if (expr == null)
-			return null;
+		try {
+			CtExpression<?> expr = ann.getValue( key );
+			if (expr == null)
+				return null;
 
-		if (expr instanceof CtLiteral<?> lit) {
-			Object val = lit.getValue();
-			if (val instanceof String s)
-				return s;
+			if (expr instanceof CtLiteral<?> lit) {
+				Object val = lit.getValue();
+				if (val instanceof String s)
+					return s;
+
+			}
+
+			// 상수 참조/식일 수도 있으니 문자열로 fallback
+			return expr.toString();
+
+		} catch (RuntimeException e) {
+			// Spoon이 존재하지 않는 annotation attribute를 reflection으로 찾다가 터지는 경우 방어
+			return null;
 
 		}
-
-		// 상수 참조/식일 수도 있으니 문자열로 fallback
-		return expr.toString();
 
 	}
 
