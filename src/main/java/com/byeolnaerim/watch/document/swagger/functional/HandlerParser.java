@@ -3,10 +3,12 @@ package com.byeolnaerim.watch.document.swagger.functional;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.http.MediaType;
@@ -53,14 +55,23 @@ import spoon.reflect.visitor.filter.TypeFilter;
  */
 public class HandlerParser {
 
-	private final CtModel model;
+	/**
+	 * external jar에서 decompile 한 타입들만 별도 registry로 받는다.
+	 * internal model은 건드리지 않는다.
+	 */
+	private final Map<String, CtType<?>> externalTypes;
 
-	//
+	public HandlerParser() {
+
+		this.externalTypes = Map.of();
+
+	}
+
 	public HandlerParser(
-							CtModel model
+							Map<String, CtType<?>> externalTypes
 	) {
 
-		this.model = model;
+		this.externalTypes = (externalTypes != null) ? externalTypes : Map.of();
 
 	}
 
@@ -90,8 +101,8 @@ public class HandlerParser {
 		queryParamsVars.clear();
 		pathsParamsVars.clear();
 		processedTypes.clear();
-		HandlerInfo handlerInfo = new HandlerInfo();
 		hasResponseBodyAnnotationOverride = false;
+		HandlerInfo handlerInfo = new HandlerInfo();
 
 		// handlerExpression이 람다인지 메서드 참조인지 판별
 		if (handlerExpression instanceof CtLambda<?> lambda) {
@@ -120,84 +131,69 @@ public class HandlerParser {
 
 	}
 
-	private List<CtMethod<?>> resolveCandidateMethods(
-		CtExecutableReference<?> execRef
+	/**
+	 * internal 기준 기존 방식 우선.
+	 * 못 찾을 때만 external registry에서 fallback.
+	 */
+	private CtType<?> resolveDeclaringType(
+		CtExecutableReference<?> executableRef
 	) {
 
-		if (execRef == null) {
-			return List.of();
+		if (executableRef == null) {
+			return null;
 
 		}
 
-		List<CtMethod<?>> candidates = new ArrayList<>();
+		String qualifiedName = null;
+		String simpleName = null;
 
-		// executable declaration이 직접 잡히는 경우 우선 사용
-		try {
+		if (executableRef.getDeclaringType() != null) {
+			qualifiedName = executableRef.getDeclaringType().getQualifiedName();
+			simpleName = executableRef.getDeclaringType().getSimpleName();
 
-			if (execRef.getExecutableDeclaration() instanceof CtMethod<?> method) {
-				candidates.add( method );
+			CtType<?> declaringType = executableRef.getDeclaringType().getTypeDeclaration();
 
-			}
-
-		} catch (Exception ignore) {
-
-			// noClasspath / external reference 에서는 여기서 실패할 수 있음
-		}
-
-		// declaring type이 있으면 type declaration에서도 후보 수집
-		CtTypeReference<?> declaringTypeRef = execRef.getDeclaringType();
-
-		if (declaringTypeRef == null) {
-			return candidates;
-
-		}
-
-		CtType<?> declaringType = declaringTypeRef.getTypeDeclaration();
-
-		if (declaringType == null) {
-			return candidates;
-
-		}
-
-		for (CtMethod<?> method : declaringType.getMethods()) {
-
-			if (method.getSimpleName().equals( execRef.getSimpleName() )) {
-				candidates.add( method );
+			// source-backed type만 즉시 사용
+			if (declaringType != null && ! declaringType.isShadow()) {
+				return declaringType;
 
 			}
 
 		}
 
-		return candidates;
+		// shadow 이거나 null 이면 external registry 우선
+		CtType<?> externalDeclaringType = findExternalDeclaringType( qualifiedName, simpleName );
+
+		if (externalDeclaringType != null) {
+			return externalDeclaringType;
+
+		}
+
+		// shadow 는 body/field 파싱에 쓸모 없으므로 null 취급
+		return null;
 
 	}
 
-	private List<CtMethod<?>> resolveCandidateMethods(
+	private CtType<?> resolveDeclaringType(
 		CtExecutableReferenceExpression<?, ?> methodRef
 	) {
 
 		if (methodRef == null) {
-			return List.of();
+			return null;
 
 		}
 
-		CtExecutableReference<?> execRef = methodRef.getExecutable();
-		List<CtMethod<?>> direct = resolveCandidateMethods( execRef );
+		CtExecutableReference<?> executableRef = methodRef.getExecutable();
 
-		if (! direct.isEmpty()) {
-			return direct;
-
-		}
-
-		if (model == null || execRef == null) {
-			return List.of();
+		if (executableRef == null) {
+			return null;
 
 		}
 
-		String methodName = execRef.getSimpleName();
+		CtType<?> declaringType = resolveDeclaringType( executableRef );
 
-		if (methodName == null || methodName.isBlank()) {
-			return List.of();
+		if (declaringType != null) {
+			return declaringType;
 
 		}
 
@@ -210,53 +206,115 @@ public class HandlerParser {
 			targetQualifiedName = targetExpr.getType().getQualifiedName();
 			targetSimpleName = targetExpr.getType().getSimpleName();
 
-		} else if (execRef.getDeclaringType() != null) {
-			targetQualifiedName = execRef.getDeclaringType().getQualifiedName();
-			targetSimpleName = execRef.getDeclaringType().getSimpleName();
+		}
+
+		CtType<?> externalDeclaringType = findExternalDeclaringType( targetQualifiedName, targetSimpleName );
+
+		if (externalDeclaringType != null) {
+			return externalDeclaringType;
 
 		}
 
-		List<CtMethod<?>> result = new ArrayList<>();
-
-		for (CtMethod<?> m : model.getElements( new TypeFilter<>( CtMethod.class ) )) {
-
-			if (! m.getSimpleName().equals( methodName )) {
-				continue;
-
-			}
-
-			CtType<?> parentType = m.getParent( CtType.class );
-
-			if (parentType == null) {
-				continue;
-
-			}
-
-			if (targetQualifiedName != null && targetQualifiedName.equals( parentType.getQualifiedName() )) {
-				result.add( m );
-				continue;
-
-			}
-
-			if (targetSimpleName != null && targetSimpleName.equals( parentType.getSimpleName() )) {
-				result.add( m );
-
-			}
-
-		}
-
-		return result;
+		return null;
 
 	}
 
-	private boolean hasServerRequestParam(
-		CtMethod<?> method
+	private CtType<?> findExternalDeclaringType(
+		String qualifiedName, String simpleName
 	) {
 
-		return method != null && method
-			.getParameters()
-			.stream()
-			.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
+		if (externalTypes == null || externalTypes.isEmpty()) {
+			return null;
+
+		}
+
+		if (qualifiedName != null && ! qualifiedName.isBlank()) {
+			CtType<?> exact = externalTypes.get( qualifiedName );
+
+			if (exact != null) {
+				return exact;
+
+			}
+
+		}
+
+		// simpleName fallback은 유일할 때만
+		if (simpleName != null && ! simpleName.isBlank()) {
+			CtType<?> found = null;
+
+			for (CtType<?> type : externalTypes.values()) {
+
+				if (simpleName.equals( type.getSimpleName() )) {
+
+					if (found != null) {
+						return null; // ambiguous
+
+					}
+
+					found = type;
+
+				}
+
+			}
+
+			return found;
+
+		}
+
+		return null;
+
+	}
+
+	private CtTypeReference<?> resolveSourceBackedTypeReference(
+		CtTypeReference<?> typeRef
+	) {
+
+		if (typeRef == null) {
+			return null;
+
+		}
+
+		CtType<?> typeDecl = typeRef.getTypeDeclaration();
+
+		if (typeDecl != null && ! typeDecl.isShadow()) {
+			return typeRef;
+
+		}
+
+		CtType<?> externalType = findExternalDeclaringType(
+			typeRef.getQualifiedName(),
+			typeRef.getSimpleName()
+		);
+
+		if (externalType != null) {
+			return externalType.getReference();
+
+		}
+
+		return typeRef;
+
+	}
+
+	private CtType<?> resolveSourceBackedType(
+		CtTypeReference<?> typeRef
+	) {
+
+		if (typeRef == null) {
+			return null;
+
+		}
+
+		CtType<?> typeDecl = typeRef.getTypeDeclaration();
+
+		if (typeDecl != null && ! typeDecl.isShadow()) {
+			return typeDecl;
+
+		}
+
+		return findExternalDeclaringType(
+			typeRef.getQualifiedName(),
+			typeRef.getSimpleName()
+		);
 
 	}
 
@@ -264,23 +322,38 @@ public class HandlerParser {
 		CtExecutableReferenceExpression<?, ?> methodRef, HandlerInfo handlerInfo, String routeName
 	) {
 
-		if (methodRef == null) {
+		CtExecutableReference<?> executableRef = methodRef.getExecutable();
+
+		if (executableRef == null) {
 			return;
 
 		}
 
-		List<CtMethod<?>> candidates = resolveCandidateMethods( methodRef );
+		// 메서드 참조에서 참조하는 메서드를 찾아야 한다.
+		// internal 기준 기존 방식 우선, 없으면 external fallback
+		CtType<?> declaringType = resolveDeclaringType( methodRef );
 
-		if (candidates.isEmpty()) {
-			return;
+		if (declaringType != null) {
+			// 메서드 이름과 파라미터 타입 등을 통해 CtMethod를 찾는다.
+			List<CtMethod<?>> candidates = declaringType
+				.getMethods()
+				.stream()
+				.filter( m -> {
+					m.getReference().getActualTypeArguments();
+					return m.getSimpleName().equals( executableRef.getSimpleName() );
 
-		}
+				} )
+				// 파라미터 타입 매칭 로직 필요. 여기서는 단순히 이름 맞추는 정도로 가정
+				.collect( Collectors.toList() );
 
-		for (CtMethod<?> method : candidates) {
+			// 여기서는 매칭되는 첫 번째 메서드를 사용
+			if (! candidates.isEmpty()) {
+				CtMethod<?> method = candidates.get( 0 );
 
-			if (method.getBody() != null) {
-				parseHandlerBody( method.getBody(), handlerInfo, routeName );
-				return;
+				if (method.getBody() != null) {
+					parseHandlerBody( method.getBody(), handlerInfo, routeName );
+
+				}
 
 			}
 
@@ -389,12 +462,25 @@ public class HandlerParser {
 			CtExecutableReference<?> execRef = inv.getExecutable();
 
 			if (execRef != null) {
-				List<CtMethod<?>> candidateMethods = resolveCandidateMethods( execRef );
+				CtType<?> declaringType = resolveDeclaringType( execRef );
 
-				for (CtMethod<?> method : candidateMethods) {
+				if (declaringType != null) {
+					List<CtMethod<?>> candidateMethods = declaringType
+						.getMethods()
+						.stream()
+						.filter( m -> m.getSimpleName().equals( execRef.getSimpleName() ) )
+						.collect( Collectors.toList() );
 
-					if (hasServerRequestParam( method ) && method.getBody() != null) {
-						parseHandlerBody( method.getBody(), handlerInfo, routeName );
+					for (CtMethod<?> method : candidateMethods) {
+						boolean hasServerRequestParam = method
+							.getParameters()
+							.stream()
+							.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
+
+						if (hasServerRequestParam && method.getBody() != null) {
+							parseHandlerBody( method.getBody(), handlerInfo, routeName );
+
+						}
 
 					}
 
@@ -420,11 +506,23 @@ public class HandlerParser {
 							if (innerExecRef == null)
 								continue;
 
-							List<CtMethod<?>> innerCandidates = resolveCandidateMethods( innerExecRef );
+							CtType<?> innerDeclaringType = resolveDeclaringType( innerExecRef );
+							if (innerDeclaringType == null)
+								continue;
+
+							List<CtMethod<?>> innerCandidates = innerDeclaringType
+								.getMethods()
+								.stream()
+								.filter( m -> m.getSimpleName().equals( innerExecRef.getSimpleName() ) )
+								.collect( Collectors.toList() );
 
 							for (CtMethod<?> m : innerCandidates) {
+								boolean hasServerRequestParam = m
+									.getParameters()
+									.stream()
+									.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
 
-								if (hasServerRequestParam( m ) && m.getBody() != null) {
+								if (hasServerRequestParam && m.getBody() != null) {
 									parseHandlerBody( m.getBody(), handlerInfo, routeName );
 
 								}
@@ -436,14 +534,40 @@ public class HandlerParser {
 					}
 
 				} else if (arg instanceof CtExecutableReferenceExpression<?, ?> methodRef) {
-					parseMethodReferenceHandler( methodRef, handlerInfo, routeName );
+					// 메서드 참조 형태도 동일하게 처리하되 null 방어
+					CtExecutableReference<?> ref = ((CtExecutableReferenceExpression<?, ?>) methodRef).getExecutable();
 
-					List<CtMethod<?>> candidates = resolveCandidateMethods( methodRef );
+					if (ref != null) {
+						// 1) 기존 처리
+						parseMethodReferenceHandler(
+							(CtExecutableReferenceExpression<?, ?>) methodRef,
+							handlerInfo,
+							routeName
+						);
 
-					for (CtMethod<?> m : candidates) {
+						// 2) NEW: 메서드 참조가 가리키는 선언부를 찾아 재귀 파싱
+						CtType<?> declaringType = resolveDeclaringType( (CtExecutableReferenceExpression<?, ?>) methodRef );
 
-						if (hasServerRequestParam( m ) && m.getBody() != null) {
-							parseHandlerBody( m.getBody(), handlerInfo, routeName );
+						if (declaringType != null) {
+							// 이름 기준 후보 수집(오버로드 고려 시 시그니처 비교로 보강 가능)
+							List<CtMethod<?>> candidates = declaringType
+								.getMethods()
+								.stream()
+								.filter( m -> m.getSimpleName().equals( ref.getSimpleName() ) )
+								.collect( Collectors.toList() );
+
+							for (CtMethod<?> m : candidates) {
+								boolean hasServerRequestParam = m
+									.getParameters()
+									.stream()
+									.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
+
+								if (hasServerRequestParam && m.getBody() != null) {
+									parseHandlerBody( m.getBody(), handlerInfo, routeName );
+
+								}
+
+							}
 
 						}
 
@@ -736,7 +860,6 @@ public class HandlerParser {
 
 		addParamInfo( handlerInfo, key, null, inv, position );
 
-
 	}
 
 	private void addParamInfo(
@@ -811,6 +934,11 @@ public class HandlerParser {
 
 		String qName = typeRef.getQualifiedName();
 
+		if (qName == null || qName.isBlank()) {
+			return Object.class;
+
+		}
+
 		// Primitive 타입 처리
 		switch (qName) {
 			case "boolean":
@@ -855,6 +983,8 @@ public class HandlerParser {
 		CtTypeReference<?> typeRef
 	) {
 
+		typeRef = resolveSourceBackedTypeReference( typeRef );
+
 		HandlerInfo.Info pInfo = new HandlerInfo.Info();
 
 		if (typeRef == null) {
@@ -875,15 +1005,17 @@ public class HandlerParser {
 			List<HandlerInfo.Info> genericParams = new ArrayList<>();
 
 			for (CtTypeReference<?> argRef : actualTypeArgs) {
-				HandlerInfo.Info genericParamInfo = buildParamInfoFromTypeRef( argRef );
+				CtTypeReference<?> resolvedArgRef = resolveSourceBackedTypeReference( argRef );
+
+				HandlerInfo.Info genericParamInfo = buildParamInfoFromTypeRef( resolvedArgRef );
 				genericParamInfo.setPosition( LayerPosition.GENERIC );
 
 				if (RouteUtil.isPojo( genericParamInfo.getType() )) {
-					parseClassFields( argRef, genericParamInfo );
+					parseClassFields( resolvedArgRef, genericParamInfo );
 
 					if (genericParamInfo.getFields().isEmpty()) {
 						parseClassFields(
-							argRef.getFactory().Type().createReference( genericParamInfo.getType() ),
+							resolvedArgRef.getFactory().Type().createReference( genericParamInfo.getType() ),
 							genericParamInfo
 						);
 
@@ -1663,65 +1795,86 @@ public class HandlerParser {
 
 
 	private void parseClassFields(
-		CtTypeReference<?> wrapperRef, HandlerInfo.Info pInfo
+		CtTypeReference<?> _wrapperRef, HandlerInfo.Info pInfo
 	) {
+
+		CtTypeReference<?> wrapperRef = resolveSourceBackedTypeReference( _wrapperRef );
+
+		if (wrapperRef == null || wrapperRef.getQualifiedName() == null) { return; }
 
 		// 이미 처리된 타입이면 중단 (순환 참조 방지)
 		if (processedTypes.contains( wrapperRef.getQualifiedName() )) { return; }
 
-		// 현재 타입을 처리 목록에 추가
 		processedTypes.add( wrapperRef.getQualifiedName() );
 
-		wrapperRef.getDeclaredFields().forEach( field -> {
-			CtTypeReference<?> fieldType = field.getType();
+		try {
+			CtType<?> wrapperTypeDecl = resolveSourceBackedType( wrapperRef );
 
+			if (wrapperTypeDecl == null) { return; }
 
-			// 제너릭 타입이 자기 자신을 참조하는 경우 방지
-			if (fieldType.getActualTypeArguments().stream().anyMatch( e -> e.getSimpleName().equals( wrapperRef.getSimpleName() ) )) {
-				HandlerInfo.Info selfRefInfo = buildPartialInfo( field, fieldType );
-				pInfo.addField( field.getSimpleName(), selfRefInfo );
-				return;
+			Optional.ofNullable( wrapperTypeDecl.getFields() ).orElse( Collections.emptyList() ).forEach( field -> {
+				CtTypeReference<?> fieldType = resolveSourceBackedTypeReference( field.getType() );
 
-			}
+				if (fieldType == null || fieldType.getQualifiedName() == null) { return; }
 
-			// 자기 자신을 참조하는 경우 (예: Token.refreshToken)
-			if (fieldType.getQualifiedName().equals( wrapperRef.getQualifiedName() )) {
-				HandlerInfo.Info selfRefInfo = buildPartialInfo( field, fieldType );
-				pInfo.addField( field.getSimpleName(), selfRefInfo );
-				return; // 무한 루프 방지
+				// 제너릭 타입이 자기 자신을 참조하는 경우 방지
+				if (fieldType
+					.getActualTypeArguments()
+					.stream()
+					.anyMatch( e -> wrapperRef.getQualifiedName().equals( e.getQualifiedName() ) )) {
 
-			}
+					HandlerInfo.Info selfRefInfo = buildPartialInfo( field.getReference(), fieldType );
+					pInfo.addField( field.getSimpleName(), selfRefInfo );
+					return;
 
-			// System.out.println( wrapperRef );
-			// System.out.println( "222" + fieldType.getSimpleName() );
-			HandlerInfo.Info fieldInfo = buildParamInfoFromTypeRef( fieldType );
-			fieldInfo.setPosition( LayerPosition.FIELDS );
+				}
 
-			if (fieldInfo.getName() == null) {
-				fieldInfo.setName( field.getSimpleName() );
+				// 자기 자신을 직접 참조하는 경우 방지
+				if (wrapperRef.getQualifiedName().equals( fieldType.getQualifiedName() )) {
+					HandlerInfo.Info selfRefInfo = buildPartialInfo( field.getReference(), fieldType );
+					pInfo.addField( field.getSimpleName(), selfRefInfo );
+					return;
 
-			}
+				}
 
-			if (fieldInfo.getType().isEnum()) {
-				fieldInfo
-					.setExample(
-						RouteUtil.parserEnumValues( fieldInfo.getType() ).toString()
-					);
+				HandlerInfo.Info fieldInfo = buildParamInfoFromTypeRef( fieldType );
+				fieldInfo.setPosition( LayerPosition.FIELDS );
 
-				// ;
-			} else if (fieldInfo.getType().isRecord() || RouteUtil.isPojo( fieldInfo.getType() )) {
+				if (fieldInfo.getName() == null) {
+					fieldInfo.setName( field.getSimpleName() );
 
-				parseClassFields( wrapperRef.getFactory().Type().createReference( fieldInfo.getType() ), fieldInfo );
+				}
 
-			}
+				Class<?> fieldClass = fieldInfo.getType();
 
-			pInfo.addField( field.getSimpleName(), fieldInfo );
+				if (fieldClass != null && fieldClass.isEnum()) {
+					fieldInfo.setExample( RouteUtil.parserEnumValues( fieldClass ).toString() );
 
-		} );
-		// 현재 처리된 타입을 제거하여 이후 동일한 타입을 다시 파싱할 수 있도록 함
-		processedTypes.remove( wrapperRef.getQualifiedName() );
+				} else {
+					CtType<?> nestedTypeDecl = resolveSourceBackedType( fieldType );
+					String qName = fieldType.getQualifiedName();
+
+					boolean canDescend = nestedTypeDecl != null && qName != null && ! qName.startsWith( "java." ) && ! qName.startsWith( "javax." ) && ! qName.startsWith( "jakarta." ) && ! qName
+						.startsWith( "reactor." );
+
+					if (canDescend) {
+						parseClassFields( fieldType, fieldInfo );
+
+					}
+
+				}
+
+				pInfo.addField( field.getSimpleName(), fieldInfo );
+
+			} );
+
+		} finally {
+			processedTypes.remove( wrapperRef.getQualifiedName() );
+
+		}
 
 	}
+
 
 	/**
 	 * "동일 타입"이거나 "자기 자신을 제너릭으로 포함"하는 경우,
@@ -1768,7 +1921,7 @@ public class HandlerParser {
 
 	}
 
-	// Mono나 Flux인지 확인해서 언래핑하는 메서드
+	// Mono나Flux인지 확인해서 언래핑하는 메서드
 	private HandlerInfo.Info unwrapIfReactorType(
 		HandlerInfo.Info pInfo
 	) {
@@ -1969,10 +2122,10 @@ public class HandlerParser {
 	) {
 
 		CtExecutableReference<?> execRef = inv.getExecutable();
-		if (execRef == null || execRef.getDeclaringType() == null)
+		if (execRef == null)
 			return null;
 
-		CtType<?> declaringType = execRef.getDeclaringType().getTypeDeclaration();
+		CtType<?> declaringType = resolveDeclaringType( execRef );
 		if (declaringType == null)
 			return null;
 
@@ -2057,7 +2210,7 @@ public class HandlerParser {
 
 			for (CtInvocation<?> httpCall : httpCalls) {
 				RouteInfo info = RouteParser.extractRouteInfoFromHttpCall( httpCall, routeMethodName );
-				HandlerParser aaa = new HandlerParser( model );
+				HandlerParser aaa = new HandlerParser();
 				HandlerInfo handlerInfo = aaa.parseHandler( info.getHandlerInfoCtExpression(), RouteUtil.convertPathToMethodName( info.getUrl() ) );
 				CtExpression<?> xxx = info.getHandlerInfoCtExpression();
 

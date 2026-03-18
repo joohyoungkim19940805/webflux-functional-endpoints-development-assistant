@@ -32,6 +32,7 @@ import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtInvocation;
 import spoon.reflect.declaration.CtMethod;
+import spoon.reflect.declaration.CtType;
 import spoon.reflect.visitor.filter.TypeFilter;
 
 
@@ -438,22 +439,27 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	/** Spoon 기반으로 RouterFunction에서 라우트 정보 추출 */
-	private List<RouteInfo> extractRouteInfos() {
-
-		Launcher launcher = new Launcher();
-		launcher.addInputResource( config.watchDirectory() );
-		launcher.getEnvironment().setAutoImports( true );
-		launcher.getEnvironment().setNoClasspath( true );
+	private Set<String> buildEffectiveSourceClasspath() {
 
 		Set<String> effectiveSourceClasspath = new LinkedHashSet<>();
 
+		// 현재 실행 중인 앱의 runtime classpath 전체
+		effectiveSourceClasspath.addAll( collectRuntimeClasspathEntries() );
+
+		// 2) 사용자가 직접 추가한 classpath
 		if (config.sourceClasspath() != null && ! config.sourceClasspath().isEmpty()) {
-			effectiveSourceClasspath.addAll( config.sourceClasspath() );
+			effectiveSourceClasspath
+				.addAll(
+					config
+						.sourceClasspath()
+						.stream()
+						.map( p -> Paths.get( p ).toAbsolutePath().normalize().toString() )
+						.toList()
+				);
 
 		}
 
-		// marker class가 로드된 실제 위치(jar 또는 classes dir)를 classpath에도 반영
+		// marker class가 로드된 실제 jar/classes 위치
 		if (config.decompileJarClasses() != null && ! config.decompileJarClasses().isEmpty()) {
 
 			for (Class<?> markerClass : config.decompileJarClasses()) {
@@ -464,11 +470,110 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 		}
 
-		// path로 직접 추가한 jar도 classpath에 반영
+		// path로 직접 추가한 jar
 		if (config.decompileJarPaths() != null && ! config.decompileJarPaths().isEmpty()) {
-			effectiveSourceClasspath.addAll( config.decompileJarPaths() );
+			effectiveSourceClasspath
+				.addAll(
+					config
+						.decompileJarPaths()
+						.stream()
+						.map( p -> Paths.get( p ).toAbsolutePath().normalize().toString() )
+						.toList()
+				);
 
 		}
+
+		return effectiveSourceClasspath
+			.stream()
+			.filter( this::isValidClasspathEntry )
+			.collect( java.util.stream.Collectors.toCollection( LinkedHashSet::new ) );
+
+	}
+
+	private List<String> collectRuntimeClasspathEntries() {
+
+		String rawClasspath = System.getProperty( "java.class.path", "" );
+
+		if (rawClasspath == null || rawClasspath.isBlank()) {
+			return List.of();
+
+		}
+
+		String[] entries = rawClasspath.split( java.util.regex.Pattern.quote( File.pathSeparator ) );
+		List<String> result = new ArrayList<>();
+
+		for (String entry : entries) {
+			if (entry == null || entry.isBlank())
+				continue;
+
+			Path path = Paths.get( entry ).toAbsolutePath().normalize();
+
+			if (Files.exists( path )) {
+				result.add( path.toString() );
+
+			}
+
+		}
+
+		return result;
+
+	}
+
+	private boolean isValidClasspathEntry(
+		String entry
+	) {
+
+		try {
+			Path path = Paths.get( entry ).toAbsolutePath().normalize();
+
+			if (! Files.exists( path )) {
+				return false;
+
+			}
+
+			if (Files.isRegularFile( path )) {
+				String name = path.getFileName().toString().toLowerCase();
+				return name.endsWith( ".jar" );
+
+			}
+
+			if (Files.isDirectory( path )) {
+				return containsClassFile( path );
+
+			}
+
+			return false;
+
+		} catch (Exception e) {
+			return false;
+
+		}
+
+	}
+
+	private boolean containsClassFile(
+		Path dir
+	) {
+
+		try (Stream<Path> walk = Files.walk( dir )) {
+			return walk.anyMatch( p -> Files.isRegularFile( p ) && p.getFileName().toString().endsWith( ".class" ) );
+
+		} catch (IOException e) {
+			return false;
+
+		}
+
+	}
+
+	/** Spoon 기반으로 RouterFunction에서 라우트 정보 추출 */
+	private List<RouteInfo> extractRouteInfos() {
+
+		Launcher launcher = new Launcher();
+		launcher.addInputResource( config.watchDirectory() );
+		launcher.getEnvironment().setAutoImports( true );
+		launcher.getEnvironment().setNoClasspath( true );
+
+		Set<String> effectiveSourceClasspath = buildEffectiveSourceClasspath();
 
 		if (! effectiveSourceClasspath.isEmpty()) {
 			launcher
@@ -479,22 +584,11 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 		}
 
-		// 직접 경로로 받은 jar는 디컴파일해서 소스 입력으로 추가
-		for (String jarPath : config.decompileJarPaths()) {
-			Path decompiledSourceDir = decompileJarToSourceDir( jarPath );
-			launcher.addInputResource( decompiledSourceDir.toString() );
-
-		}
-
-		// marker class로 받은 외부 jar/classes 위치도 입력으로 추가
-		for (Class<?> markerClass : config.decompileJarClasses()) {
-			addExternalInputResourceFromMarkerClass( launcher, markerClass );
-
-		}
-
 		launcher.buildModel();
 
 		CtModel model = launcher.getModel();
+
+		Map<String, CtType<?>> externalTypes = buildExternalTypeRegistry( effectiveSourceClasspath );
 
 		// MVC 모드면 annotated 기반 파서로
 		if (config.projectMode() == ProjectMode.MVC) { return MvcParser.parseRoutes( model ); }
@@ -516,7 +610,7 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 			for (CtInvocation<?> httpCall : httpCalls) {
 				RouteInfo routeInfo = RouteParser.extractRouteInfoFromHttpCall( httpCall, routerMethod.getSimpleName() );
-				HandlerParser handlerParser = new HandlerParser( model );
+				HandlerParser handlerParser = new HandlerParser( externalTypes );
 				routeInfo
 					.setHandlerInfo(
 						handlerParser
@@ -535,29 +629,65 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	private void addExternalInputResourceFromMarkerClass(
-		Launcher launcher, Class<?> markerClass
+	private Map<String, CtType<?>> buildExternalTypeRegistry(
+		Set<String> effectiveSourceClasspath
 	) {
 
-		Path location = resolveClassLocation( markerClass );
+		Map<String, CtType<?>> result = new HashMap<>();
 
-		if (Files.isDirectory( location )) {
-			launcher.addInputResource( location.toString() );
-			return;
+		if (config.decompileJarPaths() != null && ! config.decompileJarPaths().isEmpty()) {
 
-		}
+			for (String jarPath : config.decompileJarPaths()) {
+				Path decompiledSourceDir = decompileJarToSourceDir( jarPath, effectiveSourceClasspath );
+				loadExternalTypesFromSourceDir( result, decompiledSourceDir, effectiveSourceClasspath );
 
-		String fileName = location.getFileName() == null ? "" : location.getFileName().toString().toLowerCase();
-
-		if (! fileName.endsWith( ".jar" )) {
-			throw new IllegalArgumentException(
-				"Marker class location is neither a directory nor a jar file: " + location + " (class=" + markerClass.getName() + ")"
-			);
+			}
 
 		}
 
-		Path decompiledSourceDir = decompileJarToSourceDir( location.toString() );
-		launcher.addInputResource( decompiledSourceDir.toString() );
+		if (config.decompileJarClasses() != null && ! config.decompileJarClasses().isEmpty()) {
+
+			for (Class<?> markerClass : config.decompileJarClasses()) {
+				Path location = resolveClassLocation( markerClass );
+
+				if (Files.isRegularFile( location ) && location.getFileName().toString().toLowerCase().endsWith( ".jar" )) {
+					Path decompiledSourceDir = decompileJarToSourceDir( location.toString(), effectiveSourceClasspath );
+					loadExternalTypesFromSourceDir( result, decompiledSourceDir, effectiveSourceClasspath );
+
+				}
+
+			}
+
+		}
+
+		return result;
+
+	}
+
+	private void loadExternalTypesFromSourceDir(
+		Map<String, CtType<?>> result, Path sourceDir, Set<String> effectiveSourceClasspath
+	) {
+
+		Launcher externalLauncher = new Launcher();
+		externalLauncher.addInputResource( sourceDir.toString() );
+		externalLauncher.getEnvironment().setAutoImports( true );
+		externalLauncher.getEnvironment().setNoClasspath( true );
+
+		if (effectiveSourceClasspath != null && ! effectiveSourceClasspath.isEmpty()) {
+			externalLauncher
+				.getEnvironment()
+				.setSourceClasspath(
+					effectiveSourceClasspath.toArray( String[]::new )
+				);
+
+		}
+
+		externalLauncher.buildModel();
+
+		for (CtType<?> type : externalLauncher.getModel().getAllTypes()) {
+			result.put( type.getQualifiedName(), type );
+
+		}
 
 	}
 
@@ -608,7 +738,7 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 	}
 
 	private Path decompileJarToSourceDir(
-		String jarPath
+		String jarPath, Set<String> effectiveSourceClasspath
 	) {
 
 		try {
@@ -628,8 +758,8 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 			Map<String, String> options = new HashMap<>();
 			options.put( "outputdir", outputDir.toString() );
 
-			if (config.sourceClasspath() != null && ! config.sourceClasspath().isEmpty()) {
-				options.put( "extraclasspath", String.join( File.pathSeparator, config.sourceClasspath() ) );
+			if (effectiveSourceClasspath != null && ! effectiveSourceClasspath.isEmpty()) {
+				options.put( "extraclasspath", String.join( File.pathSeparator, effectiveSourceClasspath ) );
 
 			}
 
