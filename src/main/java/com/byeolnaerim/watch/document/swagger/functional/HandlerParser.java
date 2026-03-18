@@ -43,6 +43,7 @@ import spoon.reflect.declaration.CtVariable;
 import spoon.reflect.factory.Factory;
 import spoon.reflect.reference.CtExecutableReference;
 import spoon.reflect.reference.CtFieldReference;
+import spoon.reflect.reference.CtTypeParameterReference;
 import spoon.reflect.reference.CtTypeReference;
 import spoon.reflect.visitor.filter.TypeFilter;
 
@@ -286,12 +287,27 @@ public class HandlerParser {
 			typeRef.getSimpleName()
 		);
 
-		if (externalType != null) {
-			return externalType.getReference();
+		if (externalType == null) {
+			return typeRef;
 
 		}
 
-		return typeRef;
+		CtTypeReference<?> resolvedRef = externalType.getReference().clone();
+
+		List<CtTypeReference<?>> actualTypeArgs = typeRef.getActualTypeArguments();
+
+		if (actualTypeArgs != null && ! actualTypeArgs.isEmpty()) {
+			resolvedRef
+				.setActualTypeArguments(
+					actualTypeArgs
+						.stream()
+						.map( this::resolveSourceBackedTypeReference )
+						.collect( Collectors.toList() )
+				);
+
+		}
+
+		return resolvedRef;
 
 	}
 
@@ -1403,7 +1419,7 @@ public class HandlerParser {
 		// ok().contentType(...).body(...) or bodyValue(...)
 		String name = inv.getExecutable().getSimpleName();
 
-		// ✅ @ResponseBody가 붙어있으면 그게 최우선
+		// @ResponseBody가 붙어있으면 그게 최우선
 		if ((name.equals( "body" ) || name.equals( "bodyValue" )) && ! inv.getArguments().isEmpty()) {
 			CtExpression<?> firstArgForAnn = inv.getArguments().get( 0 );
 			CtAnnotation<?> rbAnn = findResponseBodyAnnotationRecursive( firstArgForAnn );
@@ -1424,7 +1440,7 @@ public class HandlerParser {
 
 			}
 
-			// ✅ 이미 @ResponseBody로 확정된 상태면, 추론으로 들어오는 responseBody는 무시
+			// 이미 @ResponseBody로 확정된 상태면, 추론으로 들어오는 responseBody는 무시
 			if (hasResponseBodyAnnotationOverride) { return; }
 
 		}
@@ -1467,20 +1483,20 @@ public class HandlerParser {
 
 			// 언래핑 결과가 ResponseWrapper인지 확인
 			if (isEnvelopeInfo( pInfo )) {
-				// pInfo = pInfo.getGenericTypes().get( 0 );
-				// ResponseWrapper 내부 제너릭에서도 Mono/Flux 있을 수 있으니 재귀적 언래핑
-				unwrapReactorTypes( pInfo );
-				var _pInfo = pInfo;
-				// ResponseWrapper 필드 및 제너릭 파싱
-				parseClassFields(
-					firstArgTypeRef
-						.getReferencedTypes()
-						.stream()
-						.filter( e -> ! isIgnoredResponseTypeRef( e, _pInfo.getType() ) )
-						.findFirst()
-						.orElse( firstArgTypeRef ),
-					pInfo
-				);
+				// 여기서 pInfo.genericTypes 까지 미리 unwrap 하면
+				// ResponseWrapper<Flux<AccountEntity>> 가 ResponseWrapper<AccountEntity> 로 축약되어
+				// data 필드가 array 가 아니라 단일 object 로 내려앉는다.
+				// outer Mono<ResponseWrapper<...>> 만 위의 unwrapIfReactorType(pInfo) 로 제거하고,
+				// envelope 내부 generic container(Flux/List/Mono)는 유지한 상태로 필드 해석해야 한다.
+
+				CtTypeReference<?> envelopeTypeRef = pInfo.getTypeRef();
+
+				if (envelopeTypeRef == null) {
+					envelopeTypeRef = firstArgTypeRef;
+
+				}
+
+				parseClassFields( envelopeTypeRef, pInfo );
 
 				pInfo.setPosition( LayerPosition.RESPONSE_BODY );
 
@@ -1490,7 +1506,6 @@ public class HandlerParser {
 						pInfo.getType().getSimpleName(),
 						pInfo
 					);
-
 				// if (pInfo.getGenericTypes().isEmpty()) {
 				// handlerInfo.getResponseBodyInfo().put( pInfo.getType().getSimpleName(), pInfo );
 				//
@@ -1793,10 +1808,78 @@ public class HandlerParser {
 
 	}
 
+	private CtTypeReference<?> resolveGenericFieldType(
+		CtTypeReference<?> ownerTypeRef, CtType<?> ownerTypeDecl, CtTypeReference<?> fieldType, HandlerInfo.Info ownerInfo
+	) {
+
+		fieldType = resolveSourceBackedTypeReference( fieldType );
+
+		if (fieldType == null) {
+			return null;
+
+		}
+
+		// ResponseWrapper<T>.data 같은 경우 T를 실제 타입 인자로 치환
+		if (fieldType instanceof CtTypeParameterReference) {
+			CtTypeParameterReference typeParamRef = (CtTypeParameterReference) fieldType;
+
+			String typeParamName = typeParamRef.getSimpleName();
+
+			if (typeParamRef.getDeclaration() != null) {
+				typeParamName = typeParamRef.getDeclaration().getSimpleName();
+
+			}
+
+			List<spoon.reflect.declaration.CtTypeParameter> formalTypeParams = (ownerTypeDecl != null) ? ownerTypeDecl.getFormalCtTypeParameters() : List.of();
+
+			List<CtTypeReference<?>> actualTypeArgs = (ownerTypeRef != null) ? ownerTypeRef.getActualTypeArguments() : List.of();
+
+			for (int i = 0; i < formalTypeParams.size(); i++) {
+
+				if (! formalTypeParams.get( i ).getSimpleName().equals( typeParamName )) {
+					continue;
+
+				}
+
+				// 1) ownerTypeRef에 actual type arg가 있으면 그걸 최우선 사용
+				if (actualTypeArgs.size() > i && actualTypeArgs.get( i ) != null) {
+					return resolveSourceBackedTypeReference( actualTypeArgs.get( i ) );
+
+				}
+
+				// 2) fallback: 이미 buildParamInfoFromTypeRef로 파싱된 generic info 사용
+				if (ownerInfo != null && ownerInfo.getGenericTypes() != null && ownerInfo.getGenericTypes().size() > i) {
+					HandlerInfo.Info genericInfo = ownerInfo.getGenericTypes().get( i );
+
+					if (genericInfo.getTypeRef() != null) {
+						return resolveSourceBackedTypeReference( genericInfo.getTypeRef() );
+
+					}
+
+					if (genericInfo.getType() != null && genericInfo.getType() != Object.class && ownerTypeRef != null) {
+
+						return ownerTypeRef
+							.getFactory()
+							.Type()
+							.createReference( genericInfo.getType() );
+
+					}
+
+				}
+
+			}
+
+		}
+
+		return fieldType;
+
+	}
 
 	private void parseClassFields(
 		CtTypeReference<?> _wrapperRef, HandlerInfo.Info pInfo
 	) {
+
+		if (_wrapperRef == null) { return; }
 
 		CtTypeReference<?> wrapperRef = resolveSourceBackedTypeReference( _wrapperRef );
 
@@ -1813,7 +1896,12 @@ public class HandlerParser {
 			if (wrapperTypeDecl == null) { return; }
 
 			Optional.ofNullable( wrapperTypeDecl.getFields() ).orElse( Collections.emptyList() ).forEach( field -> {
-				CtTypeReference<?> fieldType = resolveSourceBackedTypeReference( field.getType() );
+				CtTypeReference<?> fieldType = resolveGenericFieldType(
+					wrapperRef,
+					wrapperTypeDecl,
+					field.getType(),
+					pInfo
+				);
 
 				if (fieldType == null || fieldType.getQualifiedName() == null) { return; }
 
@@ -1899,23 +1987,41 @@ public class HandlerParser {
 		HandlerInfo.Info pInfo
 	) {
 
-		// 필드, 제너릭 내부에 Mono/Flux 있으면 언래핑
-		pInfo.setGenericTypes( pInfo.getGenericTypes().stream().map( this::unwrapIfReactorType ).collect( Collectors.toList() ) );
+		// genericTypes 내부 Mono/Flux 언래핑
+		pInfo
+			.setGenericTypes(
+				pInfo
+					.getGenericTypes()
+					.stream()
+					.map( this::unwrapIfReactorType )
+					.collect( Collectors.toList() )
+			);
 
 		for (HandlerInfo.Info gi : pInfo.getGenericTypes()) {
 			unwrapReactorTypes( gi );
 
 		}
 
-		for (HandlerInfo.Info fi : pInfo.getFields().values()) {
-			HandlerInfo.Info newFi = unwrapIfReactorType( fi );
+		// fields 내부 Mono/Flux 언래핑 + 실제 map 반영
+		List<String> fieldNames = new ArrayList<>( pInfo.getFields().keySet() );
 
-			if (newFi != fi) {
+		for (String fieldName : fieldNames) {
+			HandlerInfo.Info fieldInfo = pInfo.getFields().get( fieldName );
 
-				// fi 교체 필요하면 처리
+			if (fieldInfo == null) {
+				continue;
+
 			}
 
-			unwrapReactorTypes( newFi );
+			HandlerInfo.Info unwrappedFieldInfo = unwrapIfReactorType( fieldInfo );
+			unwrapReactorTypes( unwrappedFieldInfo );
+
+			if (unwrappedFieldInfo != fieldInfo) {
+				unwrappedFieldInfo.setName( fieldName );
+				unwrappedFieldInfo.setPosition( LayerPosition.FIELDS );
+				pInfo.getFields().put( fieldName, unwrappedFieldInfo );
+
+			}
 
 		}
 

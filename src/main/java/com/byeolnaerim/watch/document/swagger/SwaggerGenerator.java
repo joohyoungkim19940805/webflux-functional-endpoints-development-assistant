@@ -18,6 +18,8 @@ import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo.LayerPositi
 import com.byeolnaerim.watch.document.swagger.functional.HandlerParser;
 import com.byeolnaerim.watch.document.swagger.functional.RouteInfo;
 import com.byeolnaerim.watch.document.swagger.functional.RouteParser;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtInvocation;
@@ -248,27 +250,35 @@ public class SwaggerGenerator {
 		Map<String, Object> responses = new LinkedHashMap<>();
 		Map<String, Object> responseContent = new LinkedHashMap<>();
 
-		responseBodyInfo.forEach( (className, info) -> {
+		responseBodyInfo.forEach( (ignoredClassName, info) -> {
+			String responseSchemaName = resolveSchemaName( info );
 
-			if (schemas.containsKey( className ) && schemas.get( className ) instanceof Map map) {
+			if (schemas.containsKey( responseSchemaName ) && schemas.get( responseSchemaName ) instanceof Map map) {
 				map.putAll( buildSchema( info, schemas ) );
 
 			} else {
-				schemas.putIfAbsent( className, buildSchema( info, schemas ) );
-
-
-
+				schemas.putIfAbsent( responseSchemaName, buildSchema( info, schemas ) );
 
 			}
 
-			responseContent.put( "application/json", Map.of( "schema", Map.of( "$ref", "#/components/schemas/" + className ) ) );
+			responseContent
+				.put(
+					"application/json",
+					Map.of( "schema", Map.of( "$ref", "#/components/schemas/" + responseSchemaName ) )
+				);
 
 			if (! info.getGenericTypes().isEmpty()) {
 				info.getGenericTypes().forEach( e -> {
-					String key = e.getType().getSimpleName();
+
+					if (e.getType() == null || ! RouteUtil.isPojo( e.getType() )) {
+						return;
+
+					}
+
+					String key = resolveSchemaName( e );
 
 					if (schemas.containsKey( key ) && schemas.get( key ) instanceof Map map) {
-						map.putAll( buildSchema( info, schemas ) );
+						map.putAll( buildSchema( e, schemas ) );
 
 					} else {
 						schemas.putIfAbsent( key, buildSchema( e, schemas ) );
@@ -297,7 +307,101 @@ public class SwaggerGenerator {
 
 	}
 
-	@SuppressWarnings("unchecked")
+	private static boolean isConcreteWrapperSchema(
+		Info info
+	) {
+
+		Class<?> type = (info != null) ? info.getType() : null;
+
+		return info != null && type != null && ! info.getGenericTypes().isEmpty() && info.getFields().containsKey( "data" ) && ! java.util.Collection.class
+			.isAssignableFrom( type ) && ! java.util.Map.class.isAssignableFrom( type ) && ! java.util.Optional.class.equals( type ) && ! Flux.class.isAssignableFrom( type ) && ! Mono.class
+				.isAssignableFrom( type );
+
+	}
+
+	private static String resolveSchemaName(
+		Info info
+	) {
+
+		if (info == null) {
+			return "Object";
+
+		}
+
+		Class<?> type = info.getType();
+
+		if (type == null || type == Object.class) {
+			return (info.getTypeRef() != null && info.getTypeRef().getSimpleName() != null)
+				? info.getTypeRef().getSimpleName()
+				: "Object";
+
+		}
+
+		if (isConcreteWrapperSchema( info )) {
+			StringBuilder nameBuilder = new StringBuilder( type.getSimpleName() );
+
+			for (Info genericInfo : info.getGenericTypes()) {
+				nameBuilder.append( "Of" ).append( buildGenericSchemaSuffix( genericInfo ) );
+
+			}
+
+			return nameBuilder.toString();
+
+		}
+
+		return type.getSimpleName();
+
+	}
+
+	private static String buildGenericSchemaSuffix(
+		Info info
+	) {
+
+		if (info == null || info.getType() == null) {
+			return "Object";
+
+		}
+
+		Class<?> type = info.getType();
+
+		if (Flux.class.isAssignableFrom( type ) || List.class.isAssignableFrom( type )) {
+
+			if (! info.getGenericTypes().isEmpty()) {
+				return "ListOf" + buildGenericSchemaSuffix( info.getGenericTypes().get( 0 ) );
+
+			}
+
+			return "ListOfObject";
+
+		}
+
+		if (Mono.class.isAssignableFrom( type )) {
+
+			if (! info.getGenericTypes().isEmpty()) {
+				return buildGenericSchemaSuffix( info.getGenericTypes().get( 0 ) );
+
+			}
+
+			return "Object";
+
+		}
+
+		if (! info.getGenericTypes().isEmpty()) {
+			StringBuilder nestedBuilder = new StringBuilder( type.getSimpleName() );
+
+			for (Info genericInfo : info.getGenericTypes()) {
+				nestedBuilder.append( "Of" ).append( buildGenericSchemaSuffix( genericInfo ) );
+
+			}
+
+			return nestedBuilder.toString();
+
+		}
+
+		return type.getSimpleName();
+
+	}
+
 	private static Map<String, Object> buildSchema(
 		HandlerInfo.Info info, Map<String, Object> schemas
 
@@ -367,32 +471,28 @@ public class SwaggerGenerator {
 		List<String> enumList = new ArrayList<>();
 		Map<String, Object> items = new LinkedHashMap<>();
 
-		if (type == String.class) {
-			typeStr = "string";
+		if (type == null || type == Object.class) {
+			schema.put( "type", "object" );
+			return schema;
 
 		}
 
-		if (type == Integer.class || type == int.class || type == Long.class || type == long.class || type == Byte.class || type == byte.class || type == Short.class || type == short.class) {
-			typeStr = "integer";
+		// Mono<T> 는 응답 스키마에서 바깥 래퍼로 취급하지 않고 T 로 내린다.
+		if (Mono.class.isAssignableFrom( type )) {
+
+			if (! info.getGenericTypes().isEmpty()) {
+				return mapType( info.getGenericTypes().get( 0 ), schemas );
+
+			}
+
+			schema.put( "type", "object" );
+			return schema;
 
 		}
 
-		if (type == Double.class || type == double.class || type == Float.class || type == float.class) {
-			typeStr = "number";
-
-		}
-
-		if (type == Boolean.class || type == boolean.class) {
-			typeStr = "boolean";
-
-		}
-
-		if (type == Double.class || type == double.class || type == Float.class || type == float.class) {
-			typeStr = "number";
-
-		}
-
-		if (List.class.isAssignableFrom( type )) {
+		// List / Flux 는 모두 array 로 본다.
+		// 그리고 기존 중첩 배열 처리 로직을 유지해야 한다.
+		if (List.class.isAssignableFrom( type ) || Flux.class.isAssignableFrom( type )) {
 			typeStr = "array";
 
 			Map<String, Object> prevMap = new LinkedHashMap<>();
@@ -418,60 +518,96 @@ public class SwaggerGenerator {
 
 			};
 
-			for (int i = 0, len = info.getGenericTypes().size(); i < len; i += 1) {
+			// List<List<T>>, Flux<List<T>>, List<Flux<T>> 같은 구조까지 재귀적으로 유지
+			if (! info.getGenericTypes().isEmpty()) {
 
-				/**
-				 * 중첩구조 처리
-				 * "schema": {
-				 * "type": "array",
-				 * "items": {
-				 * "type": "array",
-				 * "items": {
-				 * "$ref": "#/components/schemas/CustomObject"
-				 * }
-				 * }
-				 * }
-				 */
-				if (i == 0) {
-					prevMap = mapType( info.getGenericTypes().get( i ), schemas );
+				for (int i = 0, len = info.getGenericTypes().size(); i < len; i += 1) {
 
-					putMap.accept( items, prevMap );
-					continue;
+					/**
+					 * 중첩구조 처리
+					 * "schema": {
+					 * "type": "array",
+					 * "items": {
+					 * "type": "array",
+					 * "items": {
+					 * "$ref": "#/components/schemas/CustomObject"
+					 * }
+					 * }
+					 * }
+					 */
+					if (i == 0) {
+						prevMap = mapType( info.getGenericTypes().get( i ), schemas );
+						putMap.accept( items, prevMap );
+						continue;
+
+					}
+
+					Map<String, Object> _items = (Map<String, Object>) prevMap.get( "items" );
+
+					if (_items == null) {
+						_items = new LinkedHashMap<>();
+						prevMap.put( "items", _items );
+
+					}
+
+					Map<String, Object> nextMap = mapType( info.getGenericTypes().get( i ), schemas );
+					putMap.accept( _items, nextMap );
+					prevMap = nextMap;
 
 				}
 
-				Map<String, Object> _items = (Map<String, Object>) prevMap.get( "items" );
-				Map<String, Object> nextMap = mapType( info.getGenericTypes().get( i ), schemas );
-
-
-				putMap.accept( _items, nextMap );
-				prevMap = nextMap;
+			} else {
+				items.put( "type", "object" );
 
 			}
 
 		}
 
+		if (type == String.class) {
+			typeStr = "string";
+
+		}
+
+		if (type == Integer.class || type == int.class || type == Long.class || type == long.class || type == Byte.class || type == byte.class || type == Short.class || type == short.class) {
+			typeStr = "integer";
+
+		}
+
+		if (type == Double.class || type == double.class || type == Float.class || type == float.class) {
+			typeStr = "number";
+
+		}
+
+		if (type == Boolean.class || type == boolean.class) {
+			typeStr = "boolean";
+
+		}
+
 		if (type == java.time.LocalDateTime.class || type == java.time.LocalDate.class || type == java.time.LocalTime.class || type == java.util.Date.class || type == java.time.Instant.class) {
-			typeStr = "string"; // Swagger에서는 날짜와 시간을 string으로 표현
-			format = type.equals( java.time.LocalDateTime.class ) ? "date-time" : type.equals( java.time.LocalDate.class ) ? "date" : type.equals( java.time.LocalTime.class ) ? "time" : "date-time";
+			typeStr = "string";
+			format = type.equals( java.time.LocalDateTime.class )
+				? "date-time"
+				: type.equals( java.time.LocalDate.class )
+					? "date"
+				: type.equals( java.time.LocalTime.class ) ? "time" : "date-time";
 
 		}
 
 		if (type.isEnum()) {
-			typeStr = "string"; // Enum도 Swagger에서는 기본적으로 문자열로 매핑
+			typeStr = "string";
 			enumList.addAll( RouteUtil.parserEnumValues( type ) );
 
 		}
 
 		if (RouteUtil.isPojo( type )) {
-			typeStr = "#/components/schemas/" + type.getSimpleName(); // 사용자 정의 클래스는 Schema로 참조
-			// System.out.println( info );
+			String schemaName = resolveSchemaName( info );
+			typeStr = "#/components/schemas/" + schemaName;
 
-			if (schemas.containsKey( type.getSimpleName() ) && schemas.get( type.getSimpleName() ) instanceof Map map) {
+			if (schemas.containsKey( schemaName ) && schemas.get( schemaName ) instanceof Map map) {
 				map.putAll( buildSchema( info, schemas ) );
 
 			} else {
-				schemas.putIfAbsent( type.getSimpleName(), buildSchema( info, schemas ) );
+				schemas.putIfAbsent( schemaName, buildSchema( info, schemas ) );
 
 			}
 
@@ -483,7 +619,7 @@ public class SwaggerGenerator {
 		}
 
 		if (typeStr == null)
-			typeStr = "object"; // 기본적으로 기타 객체 타입은 object로 처리
+			typeStr = "object";
 
 		if (format != null)
 			schema.put( "format", format );
