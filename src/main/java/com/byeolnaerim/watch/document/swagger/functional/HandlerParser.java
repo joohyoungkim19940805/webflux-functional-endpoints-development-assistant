@@ -1412,6 +1412,161 @@ public class HandlerParser {
 
 	}
 
+	private boolean isRawOrUnknownGenericType(
+		CtTypeReference<?> typeRef
+	) {
+
+		if (typeRef == null) {
+			return true;
+
+		}
+
+		List<CtTypeReference<?>> actualTypeArgs = typeRef.getActualTypeArguments();
+
+		if (actualTypeArgs == null || actualTypeArgs.isEmpty()) {
+			return true;
+
+		}
+
+		return actualTypeArgs
+			.stream()
+			.allMatch( arg -> {
+
+				if (arg == null) {
+					return true;
+
+				}
+
+				if (arg instanceof CtTypeParameterReference) {
+					return true;
+
+				}
+
+				String qName = arg.getQualifiedName();
+				String simpleName = arg.getSimpleName();
+
+				return qName == null || qName.isBlank() || "java.lang.Object".equals( qName ) || "Object".equals( simpleName );
+
+			} );
+
+	}
+
+	private CtTypeReference<?> tryResolveEnvelopeTypeFromArguments(
+		CtInvocation<?> bodyInvocation, CtTypeReference<?> currentBodyTypeRef
+	) {
+
+		if (bodyInvocation == null || bodyInvocation.getArguments().isEmpty()) {
+			return null;
+
+		}
+
+		CtExpression<?> firstArg = bodyInvocation.getArguments().get( 0 );
+
+		if (! (firstArg instanceof CtInvocation<?> firstArgInvocation)) {
+			return null;
+
+		}
+
+		CtTypeReference<?> payloadTypeRef = manuallyInferResponseType( firstArgInvocation );
+
+		if (payloadTypeRef == null) {
+			return null;
+
+		}
+
+		CtTypeReference<?> resolvedPayloadTypeRef = resolveSourceBackedTypeReference( payloadTypeRef );
+
+		if (resolvedPayloadTypeRef == null) {
+			return null;
+
+		}
+
+		CtTypeReference<?> resolvedCurrentBodyTypeRef = resolveSourceBackedTypeReference( currentBodyTypeRef );
+		String rawQualifiedName = resolvedCurrentBodyTypeRef == null ? null : resolvedCurrentBodyTypeRef.getQualifiedName();
+		String rawSimpleName = resolvedCurrentBodyTypeRef == null ? null : resolvedCurrentBodyTypeRef.getSimpleName();
+
+		CtTypeReference<?> matchedEnvelopeTypeRef = null;
+
+		for (CtExpression<?> arg : bodyInvocation.getArguments()) {
+
+			if (! (arg instanceof CtFieldAccess<?> fieldAccess)) {
+				continue;
+
+			}
+
+			if (! "class".equals( fieldAccess.getVariable().getSimpleName() )) {
+				continue;
+
+			}
+
+			if (! (fieldAccess.getTarget() instanceof CtTypeAccess<?> typeAccess)) {
+				continue;
+
+			}
+
+			CtTypeReference<?> candidateTypeRef = resolveSourceBackedTypeReference( typeAccess.getAccessedType() );
+
+			if (candidateTypeRef == null) {
+				continue;
+
+			}
+
+			boolean genericCandidate = false;
+			CtType<?> candidateTypeDecl = resolveSourceBackedType( candidateTypeRef );
+
+			if (candidateTypeDecl != null) {
+				genericCandidate = ! candidateTypeDecl.getFormalCtTypeParameters().isEmpty();
+
+			} else {
+				Class<?> candidateClass = loadClassFromTypeReference( candidateTypeRef );
+				genericCandidate = candidateClass != null && candidateClass != Object.class && candidateClass.getTypeParameters().length > 0;
+
+			}
+
+			if (! genericCandidate) {
+				continue;
+
+			}
+
+			boolean matchedByName;
+
+			if (rawQualifiedName != null && ! rawQualifiedName.isBlank()) {
+				matchedByName = rawQualifiedName.equals( candidateTypeRef.getQualifiedName() );
+
+			} else if (rawSimpleName != null && ! rawSimpleName.isBlank()) {
+				matchedByName = rawSimpleName.equals( candidateTypeRef.getSimpleName() );
+
+			} else {
+				matchedByName = true;
+
+			}
+
+			if (! matchedByName) {
+				continue;
+
+			}
+
+			if (matchedEnvelopeTypeRef != null) {
+				return null;
+
+			}
+
+			matchedEnvelopeTypeRef = candidateTypeRef;
+
+		}
+
+		if (matchedEnvelopeTypeRef == null) {
+			return null;
+
+		}
+
+		CtTypeReference<?> synthesizedEnvelopeTypeRef = matchedEnvelopeTypeRef.clone();
+		synthesizedEnvelopeTypeRef.setActualTypeArguments( List.of( resolvedPayloadTypeRef ) );
+
+		return synthesizedEnvelopeTypeRef;
+
+	}
+
 	private void parseResponseBodyFromOkChain(
 		CtInvocation<?> inv, HandlerInfo handlerInfo
 	) {
@@ -1465,8 +1620,19 @@ public class HandlerParser {
 			// );
 			// ==============================================================================
 
-			if (firstArgTypeRef == null) {
-				firstArgTypeRef = manuallyInferResponseType( (CtInvocation<?>) firstArg );
+			if (isRawOrUnknownGenericType( firstArgTypeRef )) {
+				CtTypeReference<?> resolvedEnvelopeTypeRef = tryResolveEnvelopeTypeFromArguments( inv, firstArgTypeRef );
+
+				if (resolvedEnvelopeTypeRef != null) {
+					firstArgTypeRef = resolvedEnvelopeTypeRef;
+					isParseFailedFlag = true;
+
+				}
+
+			}
+
+			if (firstArgTypeRef == null && firstArg instanceof CtInvocation<?> firstArgInvocation) {
+				firstArgTypeRef = manuallyInferResponseType( firstArgInvocation );
 				isParseFailedFlag = true;
 
 			}
