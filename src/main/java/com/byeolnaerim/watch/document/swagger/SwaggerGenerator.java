@@ -9,7 +9,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 import com.byeolnaerim.watch.RouteUtil;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo;
@@ -251,41 +250,20 @@ public class SwaggerGenerator {
 		Map<String, Object> responseContent = new LinkedHashMap<>();
 
 		responseBodyInfo.forEach( (ignoredClassName, info) -> {
-			String responseSchemaName = resolveSchemaName( info );
+			Map<String, Object> responseSchema = mapType( info, schemas );
 
-			if (schemas.containsKey( responseSchemaName ) && schemas.get( responseSchemaName ) instanceof Map map) {
-				map.putAll( buildSchema( info, schemas ) );
+			responseContent.put( "application/json", Map.of( "schema", responseSchema ) );
 
-			} else {
-				schemas.putIfAbsent( responseSchemaName, buildSchema( info, schemas ) );
+			if (isConcreteWrapperSchema( info )) {
+				String responseSchemaName = resolveSchemaName( info );
 
-			}
+				if (schemas.containsKey( responseSchemaName ) && schemas.get( responseSchemaName ) instanceof Map map) {
+					map.putAll( buildSchema( info, schemas ) );
 
-			responseContent
-				.put(
-					"application/json",
-					Map.of( "schema", Map.of( "$ref", "#/components/schemas/" + responseSchemaName ) )
-				);
+				} else {
+					schemas.putIfAbsent( responseSchemaName, buildSchema( info, schemas ) );
 
-			if (! info.getGenericTypes().isEmpty()) {
-				info.getGenericTypes().forEach( e -> {
-
-					if (e.getType() == null || ! RouteUtil.isPojo( e.getType() )) {
-						return;
-
-					}
-
-					String key = resolveSchemaName( e );
-
-					if (schemas.containsKey( key ) && schemas.get( key ) instanceof Map map) {
-						map.putAll( buildSchema( e, schemas ) );
-
-					} else {
-						schemas.putIfAbsent( key, buildSchema( e, schemas ) );
-
-					}
-
-				} );
+				}
 
 			}
 
@@ -493,73 +471,17 @@ public class SwaggerGenerator {
 		// List / Flux 는 모두 array 로 본다.
 		// 그리고 기존 중첩 배열 처리 로직을 유지해야 한다.
 		if (List.class.isAssignableFrom( type ) || Flux.class.isAssignableFrom( type )) {
-			typeStr = "array";
+			schema.put( "type", "array" );
 
-			Map<String, Object> prevMap = new LinkedHashMap<>();
-			BiConsumer<Map<String, Object>, Map<String, Object>> putMap = (parentMap, childMap) -> {
-				Object _items = childMap.get( "items" );
-				Object _enumList = childMap.get( "enum" );
-				Object _format = childMap.get( "format" );
-
-				if (childMap.containsKey( "type" )) {
-					parentMap.put( "type", childMap.get( "type" ) );
-
-				} else if (childMap.containsKey( "$ref" )) {
-					parentMap.put( "$ref", childMap.get( "$ref" ) );
-
-				}
-
-				if (_items != null)
-					parentMap.put( "items", childMap.get( "items" ) );
-				if (_format != null)
-					parentMap.put( "format", childMap.get( "format" ) );
-				if (_enumList != null)
-					parentMap.put( "enum", childMap.get( "enum" ) );
-
-			};
-
-			// List<List<T>>, Flux<List<T>>, List<Flux<T>> 같은 구조까지 재귀적으로 유지
 			if (! info.getGenericTypes().isEmpty()) {
-
-				for (int i = 0, len = info.getGenericTypes().size(); i < len; i += 1) {
-
-					/**
-					 * 중첩구조 처리
-					 * "schema": {
-					 * "type": "array",
-					 * "items": {
-					 * "type": "array",
-					 * "items": {
-					 * "$ref": "#/components/schemas/CustomObject"
-					 * }
-					 * }
-					 * }
-					 */
-					if (i == 0) {
-						prevMap = mapType( info.getGenericTypes().get( i ), schemas );
-						putMap.accept( items, prevMap );
-						continue;
-
-					}
-
-					Map<String, Object> _items = (Map<String, Object>) prevMap.get( "items" );
-
-					if (_items == null) {
-						_items = new LinkedHashMap<>();
-						prevMap.put( "items", _items );
-
-					}
-
-					Map<String, Object> nextMap = mapType( info.getGenericTypes().get( i ), schemas );
-					putMap.accept( _items, nextMap );
-					prevMap = nextMap;
-
-				}
+				schema.put( "items", mapType( info.getGenericTypes().get( 0 ), schemas ) );
 
 			} else {
-				items.put( "type", "object" );
+				schema.put( "items", Map.of( "type", "object" ) );
 
 			}
+
+			return schema;
 
 		}
 

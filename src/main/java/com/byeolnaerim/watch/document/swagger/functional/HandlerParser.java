@@ -30,6 +30,7 @@ import spoon.reflect.code.CtInvocation;
 import spoon.reflect.code.CtLambda;
 import spoon.reflect.code.CtLiteral;
 import spoon.reflect.code.CtLocalVariable;
+import spoon.reflect.code.CtNewClass;
 import spoon.reflect.code.CtReturn;
 import spoon.reflect.code.CtStatement;
 import spoon.reflect.code.CtTypeAccess;
@@ -1406,164 +1407,33 @@ public class HandlerParser {
 
 		CtExpression<?> arg = inv.getArguments().get( index );
 
-		if (arg instanceof CtFieldAccess<?> fa && "class".equals( fa.getVariable().getSimpleName() ) && fa.getTarget() instanceof CtTypeAccess<?> ta) { return ta.getAccessedType(); }
+		if (arg instanceof CtFieldAccess<?> fa && "class".equals( fa.getVariable().getSimpleName() ) && fa.getTarget() instanceof CtTypeAccess<?> ta) {
+			return resolveSourceBackedTypeReference( ta.getAccessedType() );
+
+		}
+
+		if (arg instanceof CtNewClass<?> newClass && newClass.getAnonymousClass() != null) {
+			CtTypeReference<?> superClass = newClass.getAnonymousClass().getSuperclass();
+
+			if (superClass != null && "org.springframework.core.ParameterizedTypeReference".equals( superClass.getQualifiedName() ) && superClass.getActualTypeArguments() != null && ! superClass
+				.getActualTypeArguments()
+				.isEmpty()) {
+				return resolveSourceBackedTypeReference( superClass.getActualTypeArguments().get( 0 ) );
+
+			}
+
+		}
+
+		CtTypeReference<?> argTypeRef = resolveSourceBackedTypeReference( arg.getType() );
+
+		if (argTypeRef != null && "org.springframework.core.ParameterizedTypeReference".equals( argTypeRef.getQualifiedName() ) && argTypeRef.getActualTypeArguments() != null && ! argTypeRef
+			.getActualTypeArguments()
+			.isEmpty()) {
+			return resolveSourceBackedTypeReference( argTypeRef.getActualTypeArguments().get( 0 ) );
+
+		}
 
 		return null;
-
-	}
-
-	private boolean isRawOrUnknownGenericType(
-		CtTypeReference<?> typeRef
-	) {
-
-		if (typeRef == null) {
-			return true;
-
-		}
-
-		List<CtTypeReference<?>> actualTypeArgs = typeRef.getActualTypeArguments();
-
-		if (actualTypeArgs == null || actualTypeArgs.isEmpty()) {
-			return true;
-
-		}
-
-		return actualTypeArgs
-			.stream()
-			.allMatch( arg -> {
-
-				if (arg == null) {
-					return true;
-
-				}
-
-				if (arg instanceof CtTypeParameterReference) {
-					return true;
-
-				}
-
-				String qName = arg.getQualifiedName();
-				String simpleName = arg.getSimpleName();
-
-				return qName == null || qName.isBlank() || "java.lang.Object".equals( qName ) || "Object".equals( simpleName );
-
-			} );
-
-	}
-
-	private CtTypeReference<?> tryResolveEnvelopeTypeFromArguments(
-		CtInvocation<?> bodyInvocation, CtTypeReference<?> currentBodyTypeRef
-	) {
-
-		if (bodyInvocation == null || bodyInvocation.getArguments().isEmpty()) {
-			return null;
-
-		}
-
-		CtExpression<?> firstArg = bodyInvocation.getArguments().get( 0 );
-
-		if (! (firstArg instanceof CtInvocation<?> firstArgInvocation)) {
-			return null;
-
-		}
-
-		CtTypeReference<?> payloadTypeRef = manuallyInferResponseType( firstArgInvocation );
-
-		if (payloadTypeRef == null) {
-			return null;
-
-		}
-
-		CtTypeReference<?> resolvedPayloadTypeRef = resolveSourceBackedTypeReference( payloadTypeRef );
-
-		if (resolvedPayloadTypeRef == null) {
-			return null;
-
-		}
-
-		CtTypeReference<?> resolvedCurrentBodyTypeRef = resolveSourceBackedTypeReference( currentBodyTypeRef );
-		String rawQualifiedName = resolvedCurrentBodyTypeRef == null ? null : resolvedCurrentBodyTypeRef.getQualifiedName();
-		String rawSimpleName = resolvedCurrentBodyTypeRef == null ? null : resolvedCurrentBodyTypeRef.getSimpleName();
-
-		CtTypeReference<?> matchedEnvelopeTypeRef = null;
-
-		for (CtExpression<?> arg : bodyInvocation.getArguments()) {
-
-			if (! (arg instanceof CtFieldAccess<?> fieldAccess)) {
-				continue;
-
-			}
-
-			if (! "class".equals( fieldAccess.getVariable().getSimpleName() )) {
-				continue;
-
-			}
-
-			if (! (fieldAccess.getTarget() instanceof CtTypeAccess<?> typeAccess)) {
-				continue;
-
-			}
-
-			CtTypeReference<?> candidateTypeRef = resolveSourceBackedTypeReference( typeAccess.getAccessedType() );
-
-			if (candidateTypeRef == null) {
-				continue;
-
-			}
-
-			boolean genericCandidate = false;
-			CtType<?> candidateTypeDecl = resolveSourceBackedType( candidateTypeRef );
-
-			if (candidateTypeDecl != null) {
-				genericCandidate = ! candidateTypeDecl.getFormalCtTypeParameters().isEmpty();
-
-			} else {
-				Class<?> candidateClass = loadClassFromTypeReference( candidateTypeRef );
-				genericCandidate = candidateClass != null && candidateClass != Object.class && candidateClass.getTypeParameters().length > 0;
-
-			}
-
-			if (! genericCandidate) {
-				continue;
-
-			}
-
-			boolean matchedByName;
-
-			if (rawQualifiedName != null && ! rawQualifiedName.isBlank()) {
-				matchedByName = rawQualifiedName.equals( candidateTypeRef.getQualifiedName() );
-
-			} else if (rawSimpleName != null && ! rawSimpleName.isBlank()) {
-				matchedByName = rawSimpleName.equals( candidateTypeRef.getSimpleName() );
-
-			} else {
-				matchedByName = true;
-
-			}
-
-			if (! matchedByName) {
-				continue;
-
-			}
-
-			if (matchedEnvelopeTypeRef != null) {
-				return null;
-
-			}
-
-			matchedEnvelopeTypeRef = candidateTypeRef;
-
-		}
-
-		if (matchedEnvelopeTypeRef == null) {
-			return null;
-
-		}
-
-		CtTypeReference<?> synthesizedEnvelopeTypeRef = matchedEnvelopeTypeRef.clone();
-		synthesizedEnvelopeTypeRef.setActualTypeArguments( List.of( resolvedPayloadTypeRef ) );
-
-		return synthesizedEnvelopeTypeRef;
 
 	}
 
@@ -1602,8 +1472,6 @@ public class HandlerParser {
 
 		if (name.equals( "body" ) && ! inv.getArguments().isEmpty()) {
 
-			// body(...) 호출 처리
-			// 첫 번째 인자 파싱
 
 			CtExpression<?> firstArg = inv.getArguments().get( 0 );
 
@@ -1620,41 +1488,91 @@ public class HandlerParser {
 			// );
 			// ==============================================================================
 
-			if (isRawOrUnknownGenericType( firstArgTypeRef )) {
-				CtTypeReference<?> resolvedEnvelopeTypeRef = tryResolveEnvelopeTypeFromArguments( inv, firstArgTypeRef );
+			CtInvocation<?> responseFactoryInvocation = null;
 
-				if (resolvedEnvelopeTypeRef != null) {
-					firstArgTypeRef = resolvedEnvelopeTypeRef;
-					isParseFailedFlag = true;
+
+			if (firstArg instanceof CtInvocation<?> ctInvocation) {
+				responseFactoryInvocation = ctInvocation;
+
+			} else {
+				List<CtInvocation<?>> nestedInvocations = firstArg.getElements( new TypeFilter<>( CtInvocation.class ) );
+
+				if (! nestedInvocations.isEmpty()) {
+					responseFactoryInvocation = nestedInvocations.get( nestedInvocations.size() - 1 );
 
 				}
 
 			}
 
-			if (firstArgTypeRef == null && firstArg instanceof CtInvocation<?> firstArgInvocation) {
-				firstArgTypeRef = manuallyInferResponseType( firstArgInvocation );
+			if (responseFactoryInvocation != null) {
+				CtTypeReference<?> payloadTypeRef = manuallyInferResponseType( responseFactoryInvocation );
+
+
+				if (payloadTypeRef != null && firstArgTypeRef != null) {
+					CtTypeReference<?> resolvedFirstArgTypeRef = resolveSourceBackedTypeReference( firstArgTypeRef );
+
+
+					if (resolvedFirstArgTypeRef != null && "reactor.core.publisher.Mono"
+						.equals( resolvedFirstArgTypeRef.getQualifiedName() ) && resolvedFirstArgTypeRef.getActualTypeArguments().size() == 1) {
+
+						CtTypeReference<?> outerGenericRef = resolveSourceBackedTypeReference(
+							resolvedFirstArgTypeRef.getActualTypeArguments().get( 0 )
+						);
+
+						if (outerGenericRef != null && outerGenericRef.getActualTypeArguments().size() == 1) {
+
+							CtTypeReference<?> wrapperPayloadRef = resolveSourceBackedTypeReference(
+								outerGenericRef.getActualTypeArguments().get( 0 )
+							);
+
+
+							if (wrapperPayloadRef != null && ("reactor.core.publisher.Mono".equals( wrapperPayloadRef.getQualifiedName() ) || "reactor.core.publisher.Flux"
+								.equals( wrapperPayloadRef.getQualifiedName() )) && (wrapperPayloadRef.getActualTypeArguments() == null || wrapperPayloadRef.getActualTypeArguments().isEmpty())) {
+
+								CtTypeReference<?> repairedWrapperPayloadRef = wrapperPayloadRef.clone();
+								repairedWrapperPayloadRef.setActualTypeArguments( List.of( resolveSourceBackedTypeReference( payloadTypeRef ) ) );
+
+								CtTypeReference<?> repairedOuterGenericRef = outerGenericRef.clone();
+								repairedOuterGenericRef.setActualTypeArguments( List.of( repairedWrapperPayloadRef ) );
+
+								CtTypeReference<?> repairedFirstArgTypeRef = resolvedFirstArgTypeRef.clone();
+								repairedFirstArgTypeRef.setActualTypeArguments( List.of( repairedOuterGenericRef ) );
+
+								firstArgTypeRef = repairedFirstArgTypeRef;
+								isParseFailedFlag = true;
+
+
+							}
+
+						}
+
+					}
+
+				}
+
+			}
+
+			if (firstArgTypeRef == null && responseFactoryInvocation != null) {
+				firstArgTypeRef = manuallyInferResponseType( responseFactoryInvocation );
 				isParseFailedFlag = true;
 
 			}
 
-			HandlerInfo.Info pInfo = buildParamInfoFromTypeRef( firstArgTypeRef );
+			HandlerInfo.Info rawResponseInfo = buildParamInfoFromTypeRef( firstArgTypeRef );
+			rawResponseInfo.setPosition( LayerPosition.RESPONSE_BODY );
 
+			HandlerInfo.Info pInfo = rawResponseInfo;
+			Class<?> publisherType = rawResponseInfo.getType();
 
-			pInfo.setPosition( LayerPosition.RESPONSE_BODY );
-			// Mono나 Flux 타입이면 언래핑
-			pInfo = unwrapIfReactorType( pInfo );
+			// top-level 에서는 Mono만 벗기고, Flux는 유지해야 array 로 문서화된다.
+			if (publisherType != null && Mono.class.equals( publisherType ) && ! rawResponseInfo.getGenericTypes().isEmpty()) {
+				pInfo = rawResponseInfo.getGenericTypes().get( 0 );
 
+			}
 
-			// System.out.println( "pInfo:::" + pInfo );
+			boolean envelope = isEnvelopeInfo( pInfo );
 
-			// 언래핑 결과가 ResponseWrapper인지 확인
-			if (isEnvelopeInfo( pInfo )) {
-				// 여기서 pInfo.genericTypes 까지 미리 unwrap 하면
-				// ResponseWrapper<Flux<AccountEntity>> 가 ResponseWrapper<AccountEntity> 로 축약되어
-				// data 필드가 array 가 아니라 단일 object 로 내려앉는다.
-				// outer Mono<ResponseWrapper<...>> 만 위의 unwrapIfReactorType(pInfo) 로 제거하고,
-				// envelope 내부 generic container(Flux/List/Mono)는 유지한 상태로 필드 해석해야 한다.
-
+			if (envelope) {
 				CtTypeReference<?> envelopeTypeRef = pInfo.getTypeRef();
 
 				if (envelopeTypeRef == null) {
@@ -1672,23 +1590,9 @@ public class HandlerParser {
 						pInfo.getType().getSimpleName(),
 						pInfo
 					);
-				// if (pInfo.getGenericTypes().isEmpty()) {
-				// handlerInfo.getResponseBodyInfo().put( pInfo.getType().getSimpleName(), pInfo );
-				//
-				// } else {
-				// handlerInfo.getResponseBodyInfo().put( pInfo.getGenericTypes().get( 0
-				// ).getType().getSimpleName(), pInfo );
-				//
-				// }
 
 			} else if (isParseFailedFlag) {
 
-				// handlerInfo
-				// .getResponseBodyInfo()
-				// .put(
-				// pInfo.getType().getSimpleName(),
-				// pInfo
-				// );
 				if (pInfo.getGenericTypes().isEmpty()) {
 					handlerInfo.getResponseBodyInfo().put( pInfo.getType().getSimpleName(), pInfo );
 
@@ -1698,9 +1602,7 @@ public class HandlerParser {
 						.put(
 							pInfo
 								.getGenericTypes()
-								.get(
-									0
-								)
+								.get( 0 )
 								.getType()
 								.getSimpleName(),
 							pInfo
@@ -1709,78 +1611,62 @@ public class HandlerParser {
 				}
 
 			} else {
-				// ResponseWrapper가 아니면 그냥 타입 그대로 사용
-				// 두 번째 인자 (Class<?> elementClass) 있으면 사용
-				Class<?> finalType = inv.getArguments().size() > 1 ? extractClassArgument( inv, 1 ) : pInfo.getType();
-				CtTypeReference<?> finalTypeRef = (inv.getArguments().size() > 1) ? extractTypeRefArgument( inv, 1 ) : firstArgTypeRef;
+				CtTypeReference<?> declaredElementTypeRef = (inv.getArguments().size() > 1)
+					? extractTypeRefArgument( inv, 1 )
+					: null;
 
+				HandlerInfo.Info declaredElementInfo = null;
 
-				HandlerInfo.Info finalInfo = new HandlerInfo.Info();
+				if (declaredElementTypeRef != null) {
+					declaredElementInfo = buildParamInfoFromTypeRef( declaredElementTypeRef );
+					declaredElementInfo.setPosition( LayerPosition.GENERIC );
 
-				finalInfo.setType( finalType );
-				finalInfo.setTypeRef( finalTypeRef );
-
-				if (isReactorType( pInfo.getType() ) && ! isJdkContainerType( finalType ) && ! isReactorType( finalType ) && finalType != null && finalType.getTypeParameters().length > 0 // 제너릭 클래스인가?
-				) {
-
-					if (pInfo.getGenericTypes().size() == 0) {
-
-						if (! firstArg.getReferencedTypes().isEmpty()) {
-							var _finalType = finalType;
-							var refs = firstArg
-								.getReferencedTypes()
-								.stream()
-								.filter( e -> ! isIgnoredResponseTypeRef( e, _finalType ) )
-								.toList();
-
-							if (refs.size() == 1 && refs.get( 0 ).getSimpleName().equals( "Result" )) {
-								parseClassFields( refs.get( 0 ), finalInfo );
-
-							} else if (refs.size() >= 2) {
-								parseClassFields( refs.get( 0 ), finalInfo );
-								parseClassFields( refs.get( 1 ), finalInfo );
-
-							}
-
-							if (refs.size() > 1) {
-								finalInfo
-									.setGenericTypes(
-										refs
-											.stream()
-											.map( e -> {
-												var generic = buildParamInfoFromTypeRef( e );
-												generic.setPosition( LayerPosition.GENERIC );
-												return generic;
-
-											} )
-											.filter( e -> ! e.getType().equals( Object.class ) )
-											.toList()
-									);
-
-							}
-
-						}
-
-					}
-
-				} else {
-
-					if (finalTypeRef != null) {
-						parseClassFields( finalTypeRef, finalInfo );
-
-					} else if (finalType != null && finalType != Object.class) {
-						parseClassFields( inv.getFactory().Type().createReference( finalType ), finalInfo );
+					if (declaredElementInfo.getTypeRef() != null && RouteUtil.isPojo( declaredElementInfo.getType() ) && declaredElementInfo.getFields().isEmpty()) {
+						parseClassFields( declaredElementInfo.getTypeRef(), declaredElementInfo );
 
 					}
 
 				}
 
-				// handlerInfo
-				// .getResponseBodyInfo()
-				// .put(
-				// finalInfo.getType().getSimpleName(),
-				// finalInfo
-				// );
+				HandlerInfo.Info finalInfo;
+
+				if (publisherType != null && Flux.class.equals( publisherType )) {
+					finalInfo = new HandlerInfo.Info();
+					finalInfo.setType( Flux.class );
+					finalInfo.setTypeRef( rawResponseInfo.getTypeRef() );
+					finalInfo.setPosition( LayerPosition.RESPONSE_BODY );
+
+					HandlerInfo.Info elementInfo = declaredElementInfo;
+
+					if (elementInfo == null && ! rawResponseInfo.getGenericTypes().isEmpty()) {
+						elementInfo = rawResponseInfo.getGenericTypes().get( 0 );
+
+					}
+
+					if (elementInfo == null) {
+						elementInfo = new HandlerInfo.Info();
+						elementInfo.setType( Object.class );
+
+					}
+
+					elementInfo.setPosition( LayerPosition.GENERIC );
+					finalInfo.setGenericTypes( List.of( elementInfo ) );
+
+				} else if (declaredElementInfo != null) {
+					finalInfo = declaredElementInfo;
+					finalInfo.setPosition( LayerPosition.RESPONSE_BODY );
+
+				} else {
+					finalInfo = pInfo;
+					finalInfo.setPosition( LayerPosition.RESPONSE_BODY );
+
+				}
+
+				if (finalInfo.getTypeRef() != null && RouteUtil.isPojo( finalInfo.getType() ) && finalInfo.getFields().isEmpty()) {
+					parseClassFields( finalInfo.getTypeRef(), finalInfo );
+
+				}
+
 				if (finalInfo.getGenericTypes().isEmpty()) {
 					handlerInfo.getResponseBodyInfo().put( finalInfo.getType().getSimpleName(), finalInfo );
 
@@ -1790,9 +1676,7 @@ public class HandlerParser {
 						.put(
 							finalInfo
 								.getGenericTypes()
-								.get(
-									0
-								)
+								.get( 0 )
 								.getType()
 								.getSimpleName(),
 							finalInfo
@@ -1843,6 +1727,242 @@ public class HandlerParser {
 
 	}
 
+	private CtTypeReference<?> tryInferRawReactorTypeFromVariableInitializer(
+		CtExpression<?> dataArgument, CtTypeReference<?> rawReactorTypeRef
+	) {
+
+		if (dataArgument == null || rawReactorTypeRef == null) {
+			return null;
+
+		}
+
+		String rawQualifiedName = rawReactorTypeRef.getQualifiedName();
+
+		if (! "reactor.core.publisher.Mono".equals( rawQualifiedName ) && ! "reactor.core.publisher.Flux".equals( rawQualifiedName )) {
+			return null;
+
+		}
+
+		CtVariable<?> varDecl = extractVariableDeclaration( dataArgument );
+
+		if (! (varDecl instanceof CtLocalVariable<?> localVar)) { return null; }
+
+		CtExpression<?> init = localVar.getDefaultExpression();
+
+		if (init == null) {
+			return null;
+
+		}
+
+		List<CtInvocation<?>> nestedInvocations = init.getElements( new TypeFilter<>( CtInvocation.class ) );
+		CtTypeReference<?> bestMatch = null;
+
+		for (int i = 0; i < nestedInvocations.size(); i++) {
+			CtInvocation<?> nestedInvocation = nestedInvocations.get( i );
+			CtTypeReference<?> nestedTypeRef = resolveSourceBackedTypeReference( nestedInvocation.getType() );
+
+			if (nestedTypeRef == null) {
+				continue;
+
+			}
+
+			if (! rawQualifiedName.equals( nestedTypeRef.getQualifiedName() )) {
+				continue;
+
+			}
+
+			if (nestedTypeRef.getActualTypeArguments() == null || nestedTypeRef.getActualTypeArguments().isEmpty()) {
+				continue;
+
+			}
+
+			bestMatch = nestedTypeRef;
+
+		}
+
+		return bestMatch;
+
+	}
+
+	private CtTypeReference<?> resolveActualArgumentTypeForGenericInference(
+		CtExpression<?> argumentExpression
+	) {
+
+		if (argumentExpression == null) {
+			return null;
+
+		}
+
+		CtTypeReference<?> actualTypeRef = resolveSourceBackedTypeReference( argumentExpression.getType() );
+
+		if (actualTypeRef == null) {
+			return null;
+
+		}
+
+		String qName = actualTypeRef.getQualifiedName();
+
+		if (("reactor.core.publisher.Mono".equals( qName ) || "reactor.core.publisher.Flux"
+			.equals( qName )) && (actualTypeRef.getActualTypeArguments() == null || actualTypeRef.getActualTypeArguments().isEmpty())) {
+
+			CtTypeReference<?> repairedTypeRef = tryInferRawReactorTypeFromVariableInitializer( argumentExpression, actualTypeRef );
+
+			if (repairedTypeRef != null) {
+				return resolveSourceBackedTypeReference( repairedTypeRef );
+
+			}
+
+		}
+
+		return actualTypeRef;
+
+	}
+
+	private void collectTypeParameterNames(
+		CtTypeReference<?> typeRef, Set<String> names
+	) {
+
+		typeRef = resolveSourceBackedTypeReference( typeRef );
+
+		if (typeRef == null) {
+			return;
+
+		}
+
+		if (typeRef instanceof CtTypeParameterReference typeParameterReference) {
+			String typeParameterName = typeParameterReference.getSimpleName();
+
+			if (typeParameterReference.getDeclaration() != null) {
+				typeParameterName = typeParameterReference.getDeclaration().getSimpleName();
+
+			}
+
+			if (typeParameterName != null && ! typeParameterName.isBlank()) {
+				names.add( typeParameterName );
+
+			}
+
+			return;
+
+		}
+
+		List<CtTypeReference<?>> actualTypeArguments = typeRef.getActualTypeArguments();
+
+		if (actualTypeArguments == null || actualTypeArguments.isEmpty()) {
+			return;
+
+		}
+
+		for (CtTypeReference<?> actualTypeArgument : actualTypeArguments) {
+			collectTypeParameterNames( actualTypeArgument, names );
+
+		}
+
+	}
+
+	private void bindTypeParameters(
+		CtTypeReference<?> formalTypeRef, CtTypeReference<?> actualTypeRef, Map<String, CtTypeReference<?>> bindings
+	) {
+
+		formalTypeRef = resolveSourceBackedTypeReference( formalTypeRef );
+		actualTypeRef = resolveSourceBackedTypeReference( actualTypeRef );
+
+		if (formalTypeRef == null || actualTypeRef == null) {
+			return;
+
+		}
+
+		if (formalTypeRef instanceof CtTypeParameterReference typeParameterReference) {
+			String typeParameterName = typeParameterReference.getSimpleName();
+
+			if (typeParameterReference.getDeclaration() != null) {
+				typeParameterName = typeParameterReference.getDeclaration().getSimpleName();
+
+			}
+
+			if (typeParameterName != null && ! typeParameterName.isBlank()) {
+				bindings.putIfAbsent( typeParameterName, actualTypeRef );
+
+			}
+
+			return;
+
+		}
+
+		String formalQualifiedName = formalTypeRef.getQualifiedName();
+		String actualQualifiedName = actualTypeRef.getQualifiedName();
+
+		if (formalQualifiedName == null || actualQualifiedName == null) {
+			return;
+
+		}
+
+		if (! formalQualifiedName.equals( actualQualifiedName )) {
+			return;
+
+		}
+
+		List<CtTypeReference<?>> formalTypeArguments = formalTypeRef.getActualTypeArguments();
+		List<CtTypeReference<?>> actualTypeArguments = actualTypeRef.getActualTypeArguments();
+
+		if (formalTypeArguments == null || actualTypeArguments == null) {
+			return;
+
+		}
+
+		int loopSize = Math.min( formalTypeArguments.size(), actualTypeArguments.size() );
+
+		for (int i = 0; i < loopSize; i++) {
+			bindTypeParameters( formalTypeArguments.get( i ), actualTypeArguments.get( i ), bindings );
+
+		}
+
+	}
+
+	private CtTypeReference<?> extractBoundTypeFromReturnType(
+		CtTypeReference<?> returnTypeRef, Map<String, CtTypeReference<?>> bindings
+	) {
+
+		returnTypeRef = resolveSourceBackedTypeReference( returnTypeRef );
+
+		if (returnTypeRef == null) {
+			return null;
+
+		}
+
+		if (returnTypeRef instanceof CtTypeParameterReference typeParameterReference) {
+			String typeParameterName = typeParameterReference.getSimpleName();
+
+			if (typeParameterReference.getDeclaration() != null) {
+				typeParameterName = typeParameterReference.getDeclaration().getSimpleName();
+
+			}
+
+			return bindings.get( typeParameterName );
+
+		}
+
+		List<CtTypeReference<?>> actualTypeArguments = returnTypeRef.getActualTypeArguments();
+
+		if (actualTypeArguments == null || actualTypeArguments.isEmpty()) {
+			return null;
+
+		}
+
+		for (CtTypeReference<?> actualTypeArgument : actualTypeArguments) {
+			CtTypeReference<?> boundTypeRef = extractBoundTypeFromReturnType( actualTypeArgument, bindings );
+
+			if (boundTypeRef != null) {
+				return boundTypeRef;
+
+			}
+
+		}
+
+		return null;
+
+	}
+
 	/**
 	 * spoon으로 제너릭 타입을 정확하게 가져올 수 없을 때 수동 파서
 	 * 
@@ -1854,55 +1974,79 @@ public class HandlerParser {
 		CtInvocation<?> factoryMethodCall
 	) {
 
-		// `response` 메서드의 인자 리스트에서 '데이터'에 해당하는 인자를 찾는다.
-		// 데이터가 아닌 타입(Result, Long)을 제외시키는 방식으로 찾는다.
-		CtExpression<?> dataArgument = null;
+		CtExecutableReference<?> executableReference = factoryMethodCall.getExecutable();
 
-		for (CtExpression<?> arg : factoryMethodCall.getArguments()) {
-			CtTypeReference<?> argType = arg.getType();
-
-			if (argType != null) {
-				String typeName = argType.getQualifiedName();
-				// System.out.println( "typeName:::" + typeName + " ::: " + argType.isEnum() );
-
-				if (typeName != null && ! typeName.endsWith( "Result" ) && ! typeName.equals( "java.lang.Long" )) {
-
-					dataArgument = arg;
-					break; // 데이터 인자를 찾았으므로 루프 종료
-
-				}
-
-			}
-
-		}
-
-		// 데이터 인자를 찾지 못한 경우 (예: response(Result._0) 호출)
-		if (dataArgument == null) {
-
-			// 인자가 하나뿐이고 그 타입이 Result라면, 데이터가 없는 호출이므로 파싱할 필요 없음
-			if (factoryMethodCall.getArguments().size() == 1) {
-				CtTypeReference<?> argType = factoryMethodCall.getArguments().get( 0 ).getType();
-
-				if (argType != null && argType.getQualifiedName() != null && argType.getQualifiedName().endsWith( "Result" )) { return null; }
-
-			}
-
-			// 그 외의 경우, 데이터 인자를 식별할 수 없음
+		if (executableReference == null) {
 			return null;
 
 		}
 
-		// `result` 변수 등 데이터 인자의 타입을 가져온다
-		CtTypeReference<?> dataTypeRef = dataArgument.getType();
+		CtType<?> declaringType = resolveDeclaringType( executableReference );
 
-		if (dataTypeRef == null) { return null; }
+		if (declaringType == null) {
+			return null;
 
-		// 2. ResponseWrapper에 대한 Info 객체를 생성
-		// CtTypeReference<?> wrapperTypeRef = factoryMethodCall.getFactory().Type().createReference(
-		// ResponseWrapper.class );
+		}
 
+		List<CtMethod<?>> candidates = declaringType
+			.getMethods()
+			.stream()
+			.filter( m -> m.getSimpleName().equals( executableReference.getSimpleName() ) )
+			.filter( m -> m.getParameters().size() == factoryMethodCall.getArguments().size() )
+			.collect( Collectors.toList() );
 
-		return dataTypeRef;
+		for (int c = 0; c < candidates.size(); c++) {
+			CtMethod<?> candidate = candidates.get( c );
+
+			CtTypeReference<?> returnTypeRef = resolveSourceBackedTypeReference( candidate.getType() );
+
+			if (returnTypeRef == null) {
+				continue;
+
+			}
+
+			Set<String> returnTypeParameterNames = new HashSet<>();
+			collectTypeParameterNames( returnTypeRef, returnTypeParameterNames );
+
+			if (returnTypeParameterNames.isEmpty()) {
+				continue;
+
+			}
+
+			Map<String, CtTypeReference<?>> bindings = new HashMap<>();
+
+			int loopSize = Math.min( candidate.getParameters().size(), factoryMethodCall.getArguments().size() );
+
+			for (int i = 0; i < loopSize; i++) {
+				CtTypeReference<?> formalParameterTypeRef = resolveSourceBackedTypeReference(
+					candidate.getParameters().get( i ).getType()
+				);
+				CtExpression<?> actualArgumentExpression = factoryMethodCall.getArguments().get( i );
+				CtTypeReference<?> actualArgumentTypeRef = resolveActualArgumentTypeForGenericInference( actualArgumentExpression );
+
+				bindTypeParameters( formalParameterTypeRef, actualArgumentTypeRef, bindings );
+
+			}
+
+			boolean allReturnTypeParametersBound = returnTypeParameterNames
+				.stream()
+				.allMatch( bindings::containsKey );
+
+			if (! allReturnTypeParametersBound) {
+				continue;
+
+			}
+
+			CtTypeReference<?> boundTypeRef = extractBoundTypeFromReturnType( returnTypeRef, bindings );
+
+			if (boundTypeRef != null) {
+				return resolveSourceBackedTypeReference( boundTypeRef );
+
+			}
+
+		}
+
+		return null;
 
 	}
 
