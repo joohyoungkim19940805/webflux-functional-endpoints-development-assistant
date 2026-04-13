@@ -778,7 +778,7 @@ public class EntityFileWatcher extends AbstractWatcher {
 		env.setAutoImports( true );
 		env.setNoClasspath( true );
 		env.setShouldCompile( false );
-		env.setComplianceLevel( 14 );
+		env.setComplianceLevel( 21 );
 
 		rootDir = (spoon
 			.getEnvironment()
@@ -852,7 +852,7 @@ public class EntityFileWatcher extends AbstractWatcher {
 		env.setAutoImports( true );
 		env.setNoClasspath( true );
 		env.setShouldCompile( true );
-		env.setComplianceLevel( 14 );
+		env.setComplianceLevel( 21 );
 		env.setSourceOutputDirectory( rootDir );
 		spoon.addInputResource( config.rootPath );
 		spoon.buildModel();
