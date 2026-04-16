@@ -84,6 +84,14 @@ public final class MvcParser {
 		CtModel model
 	) {
 
+		return parseRoutes( model, Map.of() );
+
+	}
+
+	public static List<RouteInfo> parseRoutes(
+		CtModel model, Map<String, CtType<?>> externalTypes
+	) {
+
 		if (model == null)
 			return List.of();
 
@@ -139,7 +147,7 @@ public final class MvcParser {
 							ri.setParentGroup( parent );
 							ri.setChildGroup( extractChildGroup( fullPath, parent ) );
 
-							HandlerInfo hi = parseHandlerInfo( method, method.getFactory(), httpMethod, consumes, produces );
+							HandlerInfo hi = parseHandlerInfo( method, method.getFactory(), httpMethod, consumes, produces, externalTypes );
 							ri.setHandlerInfo( hi );
 
 							routes.add( ri );
@@ -297,7 +305,7 @@ public final class MvcParser {
 	// HandlerInfo extraction
 	// ============================
 	private static HandlerInfo parseHandlerInfo(
-		CtMethod<?> method, Factory factory, String httpMethod, List<String> consumes, List<String> produces
+		CtMethod<?> method, Factory factory, String httpMethod, List<String> consumes, List<String> produces, Map<String, CtType<?>> externalTypes
 	) {
 
 		HandlerInfo handler = new HandlerInfo();
@@ -314,12 +322,12 @@ public final class MvcParser {
 				continue;
 
 			if (classify.kind == ParamKind.MODEL_ATTRIBUTE_FLATTEN) {
-				flattenPojoToQueryParams( p, handler );
+				flattenPojoToQueryParams( p, handler, externalTypes );
 				continue;
 
 			}
 
-			HandlerInfo.Info info = buildParamInfoFromTypeRef( classify.typeRef );
+			HandlerInfo.Info info = buildParamInfoFromTypeRef( classify.typeRef, externalTypes );
 			info.setName( classify.name );
 			info.setDefaultValue( classify.defaultValue );
 			info.setRequired( classify.required );
@@ -347,14 +355,14 @@ public final class MvcParser {
 
 			// request/response body는 POJO field 확장
 			if (info.getPosition() == LayerPosition.REQUEST_BODY) {
-				parseClassFieldsSafely( classify.typeRef, info, new HashSet<>() );
+				parseClassFieldsSafely( classify.typeRef, info, new HashSet<>(), externalTypes );
 
 			}
 
 		}
 
 		// 2) response (custom @ResponseBody 최우선)
-		HandlerInfo.Info resp = buildResponseBodyInfo( method, factory );
+		HandlerInfo.Info resp = buildResponseBodyInfo( method, factory, externalTypes );
 
 		if (resp != null) {
 			String key = schemaKey( resp );
@@ -367,7 +375,7 @@ public final class MvcParser {
 	}
 
 	private static HandlerInfo.Info buildResponseBodyInfo(
-		CtMethod<?> method, Factory factory
+		CtMethod<?> method, Factory factory, Map<String, CtType<?>> externalTypes
 	) {
 
 		// custom @ResponseBody(type=...) 우선 :contentReference[oaicite:9]{index=9}
@@ -378,12 +386,12 @@ public final class MvcParser {
 
 			if (typeClass != null && typeClass != Void.class && typeClass != void.class) {
 				CtTypeReference<?> tr = factory.Type().createReference( typeClass );
-				HandlerInfo.Info info = buildParamInfoFromTypeRef( tr );
+				HandlerInfo.Info info = buildParamInfoFromTypeRef( tr, externalTypes );
 				info.setType( typeClass );
 				info.setTypeRef( tr );
 				info.setNullable( rb.nullable() );
 				info.setPosition( LayerPosition.RESPONSE_BODY );
-				parseClassFieldsSafely( tr, info, new HashSet<>() );
+				parseClassFieldsSafely( tr, info, new HashSet<>(), externalTypes );
 				return unwrapContainerResponse( info );
 
 			}
@@ -399,11 +407,11 @@ public final class MvcParser {
 		if ("void".equals( q ) || "java.lang.Void".equals( q ) || "Void".equals( ret.getSimpleName() ))
 			return null;
 
-		HandlerInfo.Info info = buildParamInfoFromTypeRef( ret );
+		HandlerInfo.Info info = buildParamInfoFromTypeRef( ret, externalTypes );
 		info.setPosition( LayerPosition.RESPONSE_BODY );
 		info = unwrapContainerResponse( info );
 
-		parseClassFieldsSafely( info.getTypeRef(), info, new HashSet<>() );
+		parseClassFieldsSafely( info.getTypeRef(), info, new HashSet<>(), externalTypes );
 		return info;
 
 	}
@@ -597,7 +605,7 @@ public final class MvcParser {
 	// Flatten ModelAttribute
 	// ----------------------------
 	private static void flattenPojoToQueryParams(
-		CtParameter<?> p, HandlerInfo handler
+		CtParameter<?> p, HandlerInfo handler, Map<String, CtType<?>> externalTypes
 	) {
 
 		if (p == null || handler == null)
@@ -607,8 +615,8 @@ public final class MvcParser {
 		if (tr == null)
 			return;
 
-		HandlerInfo.Info root = buildParamInfoFromTypeRef( tr );
-		parseClassFieldsSafely( tr, root, new HashSet<>() );
+		HandlerInfo.Info root = buildParamInfoFromTypeRef( tr, externalTypes );
+		parseClassFieldsSafely( tr, root, new HashSet<>(), externalTypes );
 
 		for (Map.Entry<String, HandlerInfo.Info> e : root.getFields().entrySet()) {
 			String fieldName = e.getKey();
@@ -635,8 +643,10 @@ public final class MvcParser {
 	// Type/Field parsing (minimal copy)
 	// ============================
 	private static HandlerInfo.Info buildParamInfoFromTypeRef(
-		CtTypeReference<?> typeRef
+		CtTypeReference<?> _typeRef, Map<String, CtType<?>> externalTypes
 	) {
+
+		CtTypeReference<?> typeRef = resolveSourceBackedTypeReference( _typeRef, externalTypes );
 
 		HandlerInfo.Info info = new HandlerInfo.Info();
 		info.setTypeRef( typeRef );
@@ -652,7 +662,7 @@ public final class MvcParser {
 			List<HandlerInfo.Info> generics = new ArrayList<>();
 
 			for (CtTypeReference<?> ga : typeRef.getActualTypeArguments()) {
-				HandlerInfo.Info gi = buildParamInfoFromTypeRef( ga );
+				HandlerInfo.Info gi = buildParamInfoFromTypeRef( ga, externalTypes );
 				gi.setPosition( LayerPosition.GENERIC );
 				generics.add( gi );
 
@@ -687,10 +697,15 @@ public final class MvcParser {
 	}
 
 	private static void parseClassFieldsSafely(
-		CtTypeReference<?> typeRef, HandlerInfo.Info target, Set<String> visited
+		CtTypeReference<?> _typeRef, HandlerInfo.Info target, Set<String> visited, Map<String, CtType<?>> externalTypes
 	) {
 
-		if (typeRef == null || target == null)
+		if (_typeRef == null || target == null)
+			return;
+
+		CtTypeReference<?> typeRef = resolveSourceBackedTypeReference( _typeRef, externalTypes );
+
+		if (typeRef == null)
 			return;
 
 		// List/Map 같은 컨테이너면 내부 제너릭을 파싱하는게 더 의미있음
@@ -701,8 +716,8 @@ public final class MvcParser {
 			if (typeRef.getActualTypeArguments() != null && ! typeRef.getActualTypeArguments().isEmpty()) {
 				CtTypeReference<?> inner = typeRef.getActualTypeArguments().get( 0 );
 				// inner schema 확장
-				HandlerInfo.Info innerInfo = buildParamInfoFromTypeRef( inner );
-				parseClassFieldsSafely( inner, innerInfo, visited );
+				HandlerInfo.Info innerInfo = buildParamInfoFromTypeRef( inner, externalTypes );
+				parseClassFieldsSafely( inner, innerInfo, visited, externalTypes );
 				return;
 
 			}
@@ -721,9 +736,16 @@ public final class MvcParser {
 			return;
 		visited.add( key );
 
-		CtType<?> decl = typeRef.getTypeDeclaration();
+		CtType<?> decl = resolveSourceBackedType( typeRef, externalTypes );
 		if (decl == null)
 			return;
+
+		CtTypeReference<?> superClassRef = resolveSourceBackedTypeReference( decl.getSuperclass(), externalTypes );
+
+		if (superClassRef != null && superClassRef.getQualifiedName() != null && ! "java.lang.Object".equals( superClassRef.getQualifiedName() )) {
+			parseClassFieldsSafely( superClassRef, target, visited, externalTypes );
+
+		}
 
 		// record 지원
 		if (decl instanceof CtRecord rec) {
@@ -732,9 +754,10 @@ public final class MvcParser {
 				if (rc == null || rc.getType() == null)
 					continue;
 				String fn = rc.getSimpleName();
-				HandlerInfo.Info fi = buildParamInfoFromTypeRef( rc.getType() );
+				HandlerInfo.Info fi = buildParamInfoFromTypeRef( rc.getType(), externalTypes );
 				fi.setName( fn );
 				fi.setPosition( LayerPosition.FIELDS );
+				parseNestedTypeIfNeeded( fi, visited, externalTypes );
 				target.getFields().put( fn, fi );
 
 			}
@@ -750,12 +773,132 @@ public final class MvcParser {
 				continue;
 
 			String fn = f.getSimpleName();
-			HandlerInfo.Info fi = buildParamInfoFromTypeRef( f.getType() );
+			HandlerInfo.Info fi = buildParamInfoFromTypeRef( f.getType(), externalTypes );
 			fi.setName( fn );
 			fi.setPosition( LayerPosition.FIELDS );
+			parseNestedTypeIfNeeded( fi, visited, externalTypes );
 			target.getFields().put( fn, fi );
 
 		}
+
+	}
+
+
+	private static void parseNestedTypeIfNeeded(
+		HandlerInfo.Info info, Set<String> visited, Map<String, CtType<?>> externalTypes
+	) {
+
+		if (info == null)
+			return;
+
+		CtTypeReference<?> typeRef = resolveSourceBackedTypeReference( info.getTypeRef(), externalTypes );
+
+		if (typeRef != null && isComplexPojo( typeRef )) {
+			parseClassFieldsSafely( typeRef, info, visited, externalTypes );
+
+		}
+
+		if (info.getGenericTypes() == null || info.getGenericTypes().isEmpty())
+			return;
+
+		for (HandlerInfo.Info genericInfo : info.getGenericTypes()) {
+			if (genericInfo == null)
+				continue;
+			genericInfo.setPosition( LayerPosition.GENERIC );
+			CtTypeReference<?> genericTypeRef = resolveSourceBackedTypeReference( genericInfo.getTypeRef(), externalTypes );
+
+			if (genericTypeRef != null && isComplexPojo( genericTypeRef )) {
+				parseClassFieldsSafely( genericTypeRef, genericInfo, visited, externalTypes );
+
+			}
+
+		}
+
+	}
+
+	private static CtTypeReference<?> resolveSourceBackedTypeReference(
+		CtTypeReference<?> typeRef, Map<String, CtType<?>> externalTypes
+	) {
+
+		if (typeRef == null)
+			return null;
+
+		CtType<?> decl = typeRef.getTypeDeclaration();
+
+		if (decl != null && ! decl.isShadow())
+			return typeRef;
+
+		CtType<?> externalType = findExternalDeclaringType( typeRef.getQualifiedName(), typeRef.getSimpleName(), externalTypes );
+
+		if (externalType == null)
+			return typeRef;
+
+		CtTypeReference<?> resolvedRef = externalType.getReference().clone();
+
+		if (typeRef.getActualTypeArguments() != null && ! typeRef.getActualTypeArguments().isEmpty()) {
+			resolvedRef
+				.setActualTypeArguments(
+					typeRef
+						.getActualTypeArguments()
+						.stream()
+						.map( e -> resolveSourceBackedTypeReference( e, externalTypes ) )
+						.collect( Collectors.toList() )
+				);
+
+		}
+
+		return resolvedRef;
+
+	}
+
+	private static CtType<?> resolveSourceBackedType(
+		CtTypeReference<?> typeRef, Map<String, CtType<?>> externalTypes
+	) {
+
+		CtTypeReference<?> resolvedRef = resolveSourceBackedTypeReference( typeRef, externalTypes );
+
+		if (resolvedRef == null)
+			return null;
+
+		CtType<?> decl = resolvedRef.getTypeDeclaration();
+
+		if (decl != null && ! decl.isShadow())
+			return decl;
+
+		return findExternalDeclaringType( resolvedRef.getQualifiedName(), resolvedRef.getSimpleName(), externalTypes );
+
+	}
+
+	private static CtType<?> findExternalDeclaringType(
+		String qualifiedName, String simpleName, Map<String, CtType<?>> externalTypes
+	) {
+
+		if (externalTypes == null || externalTypes.isEmpty())
+			return null;
+
+		if (qualifiedName != null && ! qualifiedName.isBlank()) {
+			CtType<?> exact = externalTypes.get( qualifiedName );
+
+			if (exact != null)
+				return exact;
+
+		}
+
+		if (simpleName == null || simpleName.isBlank())
+			return null;
+
+		CtType<?> found = null;
+
+		for (CtType<?> type : externalTypes.values()) {
+			if (! simpleName.equals( type.getSimpleName() ))
+				continue;
+			if (found != null)
+				return null;
+			found = type;
+
+		}
+
+		return found;
 
 	}
 

@@ -2205,7 +2205,17 @@ public class HandlerParser {
 
 			if (wrapperTypeDecl == null) { return; }
 
+			CtTypeReference<?> superClassRef = resolveSourceBackedTypeReference( wrapperTypeDecl.getSuperclass() );
+
+			if (superClassRef != null && superClassRef.getQualifiedName() != null && ! "java.lang.Object".equals( superClassRef.getQualifiedName() )) {
+				parseClassFields( superClassRef, pInfo );
+
+			}
+
 			Optional.ofNullable( wrapperTypeDecl.getFields() ).orElse( Collections.emptyList() ).forEach( field -> {
+
+				if (field == null || field.getType() == null || field.isStatic()) { return; }
+
 				CtTypeReference<?> fieldType = resolveGenericFieldType(
 					wrapperRef,
 					wrapperTypeDecl,
@@ -2237,11 +2247,7 @@ public class HandlerParser {
 
 				HandlerInfo.Info fieldInfo = buildParamInfoFromTypeRef( fieldType );
 				fieldInfo.setPosition( LayerPosition.FIELDS );
-
-				if (fieldInfo.getName() == null) {
-					fieldInfo.setName( field.getSimpleName() );
-
-				}
+				fieldInfo.setName( field.getSimpleName() );
 
 				Class<?> fieldClass = fieldInfo.getType();
 

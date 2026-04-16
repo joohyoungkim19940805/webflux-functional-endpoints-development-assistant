@@ -591,7 +591,7 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 		Map<String, CtType<?>> externalTypes = buildExternalTypeRegistry( effectiveSourceClasspath );
 
 		// MVC 모드면 annotated 기반 파서로
-		if (config.projectMode() == ProjectMode.MVC) { return MvcParser.parseRoutes( model ); }
+		if (config.projectMode() == ProjectMode.MVC) { return MvcParser.parseRoutes( model, externalTypes ); }
 
 		List<CtMethod<?>> routerMethods = model
 			.getElements(
