@@ -2,6 +2,8 @@ package com.byeolnaerim.watch.document.swagger;
 
 
 import java.io.File;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -497,6 +499,11 @@ public class SwaggerGenerator {
 
 		if (type == Double.class || type == double.class || type == Float.class || type == float.class) {
 			typeStr = "number";
+
+		}
+
+		if (type == BigDecimal.class || type == BigInteger.class) {
+			typeStr = "string";
 
 		}
 
