@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import com.byeolnaerim.watch.RouteUtil;
@@ -384,29 +385,20 @@ public class SwaggerGenerator {
 
 	private static Map<String, Object> buildSchema(
 		HandlerInfo.Info info, Map<String, Object> schemas
-
-
 	) {
 
 		Map<String, Object> schema = new LinkedHashMap<>();
 		Map<String, Object> properties = new LinkedHashMap<>();
+		List<String> required = new ArrayList<>();
+
 		schema.put( "type", "object" );
 		schema.put( "properties", properties );
 		schema.put( "additionalProperties", false );
+
 		info.getFields().forEach( (fieldName, fieldInfo) -> {
 
-			// Map<String, Object> property = new LinkedHashMap<>();
 			Map<String, Object> fieldTypeMap = mapType( fieldInfo, schemas );
-
-
 			Map<String, Object> property = new LinkedHashMap<>( fieldTypeMap );
-
-			// property.put( "type", fieldTypeMap.get( "type" ) );
-
-			// if (fieldTypeMap.containsKey( "enum" )) {
-			// property.put( "enum", fieldTypeMap.get( "enum" ) );
-			//
-			// }
 
 			if (fieldInfo.getDescription() != null) {
 				property.put( "description", fieldInfo.getDescription() );
@@ -420,7 +412,17 @@ public class SwaggerGenerator {
 
 			properties.put( fieldName, property );
 
+			if (Boolean.TRUE.equals( fieldInfo.getRequired() )) {
+				required.add( fieldName );
+
+			}
+
 		} );
+
+		if (! required.isEmpty()) {
+			schema.put( "required", required );
+
+		}
 
 		return schema;
 
@@ -440,8 +442,6 @@ public class SwaggerGenerator {
 	@SuppressWarnings("unchecked")
 	private static Map<String, Object> mapType(
 		Info info, Map<String, Object> schemas
-
-
 	) {
 
 		Class<?> type = info.getType();
@@ -449,9 +449,18 @@ public class SwaggerGenerator {
 		String typeStr = null;
 		String format = null;
 		List<String> enumList = new ArrayList<>();
-		Map<String, Object> items = new LinkedHashMap<>();
 
 		if (type == null || type == Object.class) {
+			schema.put( "type", "object" );
+			return schema;
+
+		}
+
+		// Optional<T> 는 내부 T 로 내린다.
+		if (Optional.class.isAssignableFrom( type )) {
+
+			if (! info.getGenericTypes().isEmpty()) { return mapType( info.getGenericTypes().get( 0 ), schemas ); }
+
 			schema.put( "type", "object" );
 			return schema;
 
@@ -460,19 +469,39 @@ public class SwaggerGenerator {
 		// Mono<T> 는 응답 스키마에서 바깥 래퍼로 취급하지 않고 T 로 내린다.
 		if (Mono.class.isAssignableFrom( type )) {
 
-			if (! info.getGenericTypes().isEmpty()) {
-				return mapType( info.getGenericTypes().get( 0 ), schemas );
-
-			}
+			if (! info.getGenericTypes().isEmpty()) { return mapType( info.getGenericTypes().get( 0 ), schemas ); }
 
 			schema.put( "type", "object" );
 			return schema;
 
 		}
 
-		// List / Flux 는 모두 array 로 본다.
-		// 그리고 기존 중첩 배열 처리 로직을 유지해야 한다.
-		if (List.class.isAssignableFrom( type ) || Flux.class.isAssignableFrom( type )) {
+		// Map<K, V> 는 object + additionalProperties 로 본다.
+		if (Map.class.isAssignableFrom( type )) {
+			schema.put( "type", "object" );
+
+			if (info.getGenericTypes().size() >= 2) {
+				schema.put( "additionalProperties", mapType( info.getGenericTypes().get( 1 ), schemas ) );
+
+			} else {
+				schema.put( "additionalProperties", true );
+
+			}
+
+			return schema;
+
+		}
+
+		// byte[] / Byte[] 는 바이너리 문자열로 본다.
+		if (type == byte[].class || type == Byte[].class) {
+			schema.put( "type", "string" );
+			schema.put( "format", "byte" );
+			return schema;
+
+		}
+
+		// Collection / Flux 는 모두 array 로 본다.
+		if (java.util.Collection.class.isAssignableFrom( type ) || Flux.class.isAssignableFrom( type )) {
 			schema.put( "type", "array" );
 
 			if (! info.getGenericTypes().isEmpty()) {
@@ -492,16 +521,36 @@ public class SwaggerGenerator {
 
 		}
 
-		if (type == Integer.class || type == int.class || type == Long.class || type == long.class || type == Byte.class || type == byte.class || type == Short.class || type == short.class) {
+		// OSS 기본 정책: long 은 TS number 로 바로 내리지 않고 string 으로 보수적으로 매핑
+		if (type == Long.class || type == long.class) {
+			typeStr = "string";
+
+		}
+
+		if (type == Integer.class || type == int.class) {
+			typeStr = "integer";
+			format = "int32";
+
+		}
+
+		if (type == Byte.class || type == byte.class || type == Short.class || type == short.class) {
 			typeStr = "integer";
 
 		}
 
-		if (type == Double.class || type == double.class || type == Float.class || type == float.class) {
+		if (type == Double.class || type == double.class) {
 			typeStr = "number";
+			format = "double";
 
 		}
 
+		if (type == Float.class || type == float.class) {
+			typeStr = "number";
+			format = "float";
+
+		}
+
+		// OSS 기본 정책: BigDecimal / BigInteger 는 string 으로 보수적으로 매핑
 		if (type == BigDecimal.class || type == BigInteger.class) {
 			typeStr = "string";
 
@@ -512,19 +561,38 @@ public class SwaggerGenerator {
 
 		}
 
-		if (type == java.time.LocalDateTime.class || type == java.time.LocalDate.class || type == java.time.LocalTime.class || type == java.util.Date.class || type == java.time.Instant.class) {
+		if (type == java.time.LocalDate.class) {
 			typeStr = "string";
-			format = type.equals( java.time.LocalDateTime.class )
-				? "date-time"
-				: type.equals( java.time.LocalDate.class )
-					? "date"
-				: type.equals( java.time.LocalTime.class ) ? "time" : "date-time";
+			format = "date";
+
+		}
+
+		if (type == java.time.LocalDateTime.class || type == java.util.Date.class || type == java.time.Instant.class || type == java.time.OffsetDateTime.class || type == java.time.ZonedDateTime.class) {
+			typeStr = "string";
+			format = "date-time";
+
+		}
+
+		if (type == java.time.LocalTime.class) {
+			typeStr = "string";
+			format = "time";
+
+		}
+
+		if (type == java.util.UUID.class) {
+			typeStr = "string";
+			format = "uuid";
 
 		}
 
 		if (type.isEnum()) {
 			typeStr = "string";
 			enumList.addAll( RouteUtil.parserEnumValues( type ) );
+
+		}
+
+		if ((type.getSimpleName() != null && type.getSimpleName().contains( "ObjectId" ))) {
+			typeStr = "string";
 
 		}
 
@@ -542,22 +610,20 @@ public class SwaggerGenerator {
 
 		}
 
-		if ((type.getSimpleName() != null && type.getSimpleName().contains( "ObjectId" ))) {
-			typeStr = "string";
+		if (typeStr == null) {
+			typeStr = "object";
 
 		}
 
-		if (typeStr == null)
-			typeStr = "object";
-
-		if (format != null)
+		if (format != null) {
 			schema.put( "format", format );
 
-		if (! enumList.isEmpty())
+		}
+
+		if (! enumList.isEmpty()) {
 			schema.put( "enum", enumList );
 
-		if (items.size() != 0)
-			schema.put( "items", items );
+		}
 
 		if (typeStr.startsWith( "#" )) {
 			schema.put( "$ref", typeStr );
