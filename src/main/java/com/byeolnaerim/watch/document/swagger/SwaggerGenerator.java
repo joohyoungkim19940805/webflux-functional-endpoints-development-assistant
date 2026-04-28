@@ -575,7 +575,8 @@ public class SwaggerGenerator {
 
 		// OSS 기본 정책: long 은 TS number 로 바로 내리지 않고 string 으로 보수적으로 매핑
 		if (type == Long.class || type == long.class) {
-			typeStr = "string";
+			typeStr = "integer";
+			format = "int64";
 
 		}
 
