@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiPredicate;
 import java.util.stream.Collectors;
 import com.byeolnaerim.watch.RouteUtil;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo;
@@ -43,6 +44,32 @@ public class SwaggerGenerator {
 	 *
 	 * @param routeInfos
 	 *            the parsed route metadata
+	 * @param customTypeMapper
+	 *            custom type mapper. If it mutates the given schema and returns {@code true},
+	 *            the default type mapping stops and the mutated schema is used as-is.
+	 *
+	 * @return the generated Swagger JSON string
+	 *
+	 * @throws Exception
+	 *             if JSON generation fails
+	 */
+	@SuppressWarnings({
+		"unchecked", "rawtypes"
+	})
+	public static String generateSwaggerJson(
+		List<RouteInfo> routeInfos
+	)
+		throws Exception {
+
+		return generateSwaggerJson( routeInfos, null );
+
+	}
+
+	/**
+	 * Generates a Swagger/OpenAPI JSON document from the given route metadata.
+	 *
+	 * @param routeInfos
+	 *            the parsed route metadata
 	 * 
 	 * @return the generated Swagger JSON string
 	 * 
@@ -53,7 +80,7 @@ public class SwaggerGenerator {
 		"unchecked", "rawtypes"
 	})
 	public static String generateSwaggerJson(
-		List<RouteInfo> routeInfos
+		List<RouteInfo> routeInfos, BiPredicate<Class<?>, Map<String, Object>> customTypeMapper
 	)
 		throws Exception {
 
@@ -115,15 +142,14 @@ public class SwaggerGenerator {
 
 			// Request Body 설정
 			if (! routeInfo.getHandlerInfo().getRequestBodyInfo().isEmpty()) {
-				methodDetails.put( "requestBody", generateRequestBody( routeInfo.getHandlerInfo().getRequestBodyInfo(), schemas ) );
-
+				methodDetails.put( "requestBody", generateRequestBody( routeInfo.getHandlerInfo().getRequestBodyInfo(), schemas, customTypeMapper ) );
 
 			}
 
 			// Parameters 설정 (Query, Path)
 			List<Map<String, Object>> allParams = new ArrayList<>();
-			allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getQueryStringInfo(), parameters, schemas ) );
-			allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getPathVariableInfo(), parameters, schemas ) );
+			allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getQueryStringInfo(), parameters, schemas, customTypeMapper ) );
+			allParams.addAll( generateParameters( routeInfo.getHandlerInfo().getPathVariableInfo(), parameters, schemas, customTypeMapper ) );
 
 			if (! allParams.isEmpty()) {
 				methodDetails.put( "parameters", allParams );
@@ -131,9 +157,11 @@ public class SwaggerGenerator {
 			}
 
 			// Response 설정
-			if (! routeInfo.getHandlerInfo().getResponseBodyInfo().isEmpty()) {
-				methodDetails.put( "responses", generateResponses( routeInfo.getHandlerInfo().getResponseBodyInfo(), schemas ) );
+			if (! routeInfo.getHandlerInfo().getResponseInfoByStatusCode().isEmpty()) {
+				methodDetails.put( "responses", generateResponses( routeInfo.getHandlerInfo().getResponseInfoByStatusCode(), schemas, customTypeMapper ) );
 
+			} else if (! routeInfo.getHandlerInfo().getResponseBodyInfo().isEmpty()) {
+				methodDetails.put( "responses", generateResponses( routeInfo.getHandlerInfo().getResponseBodyInfo(), schemas, customTypeMapper ) );
 
 			}
 
@@ -191,7 +219,7 @@ public class SwaggerGenerator {
 	}
 
 	private static Map<String, Object> generateRequestBody(
-		Map<String, HandlerInfo.Info> requestBodyInfo, Map<String, Object> schemas
+		Map<String, HandlerInfo.Info> requestBodyInfo, Map<String, Object> schemas, BiPredicate<Class<?>, Map<String, Object>> customTypeMapper
 
 	) {
 
@@ -201,7 +229,7 @@ public class SwaggerGenerator {
 		Map<String, Object> content = new LinkedHashMap<>();
 		requestBodyInfo.forEach( (className, info) -> {
 			String schemaName = className;
-			schemas.putIfAbsent( schemaName, buildSchema( info, schemas ) );
+			schemas.putIfAbsent( schemaName, buildSchema( info, schemas, customTypeMapper ) );
 
 			content.put( "application/json", Map.of( "schema", Map.of( "$ref", "#/components/schemas/" + schemaName ) ) );
 
@@ -213,7 +241,7 @@ public class SwaggerGenerator {
 	}
 
 	private static List<Map<String, Object>> generateParameters(
-		Map<String, HandlerInfo.Info> paramInfo, Map<String, Object> parameters, Map<String, Object> schemas
+		Map<String, HandlerInfo.Info> paramInfo, Map<String, Object> parameters, Map<String, Object> schemas, BiPredicate<Class<?>, Map<String, Object>> customTypeMapper
 
 
 	) {
@@ -225,7 +253,7 @@ public class SwaggerGenerator {
 			param.put( "name", info.getName() );
 			param.put( "in", in );
 			param.put( "required", info.getRequired() );
-			param.put( "schema", mapType( info, schemas ) );
+			param.put( "schema", mapType( info, schemas, customTypeMapper ) );
 
 			param.put( "description", info.getDescription() );
 
@@ -244,47 +272,66 @@ public class SwaggerGenerator {
 
 	@SuppressWarnings("unchecked")
 	private static Map<String, Object> generateResponses(
-		Map<String, HandlerInfo.Info> responseBodyInfo, Map<String, Object> schemas
+		Map<String, HandlerInfo.Info> responseInfoByStatusCode, Map<String, Object> schemas, BiPredicate<Class<?>, Map<String, Object>> customTypeMapper
 
 
 	) {
 
 		Map<String, Object> responses = new LinkedHashMap<>();
-		Map<String, Object> responseContent = new LinkedHashMap<>();
 
-		responseBodyInfo.forEach( (ignoredClassName, info) -> {
-			Map<String, Object> responseSchema = mapType( info, schemas );
+		responseInfoByStatusCode.forEach( (statusCode, info) -> {
+			Map<String, Object> response = new LinkedHashMap<>();
+			response.put( "description", generateResponseDescription( statusCode ) );
 
-			responseContent.put( "application/json", Map.of( "schema", responseSchema ) );
+			if (info != null) {
+				Map<String, Object> responseContent = new LinkedHashMap<>();
+				Map<String, Object> responseSchema = mapType( info, schemas, customTypeMapper );
 
-			if (isConcreteWrapperSchema( info )) {
-				String responseSchemaName = resolveSchemaName( info );
+				responseContent.put( "application/json", Map.of( "schema", responseSchema ) );
+				response.put( "content", responseContent );
 
-				if (schemas.containsKey( responseSchemaName ) && schemas.get( responseSchemaName ) instanceof Map map) {
-					map.putAll( buildSchema( info, schemas ) );
+				if (isConcreteWrapperSchema( info )) {
+					String responseSchemaName = resolveSchemaName( info );
 
-				} else {
-					schemas.putIfAbsent( responseSchemaName, buildSchema( info, schemas ) );
+					if (schemas.containsKey( responseSchemaName ) && schemas.get( responseSchemaName ) instanceof Map map) {
+						map.putAll( buildSchema( info, schemas, customTypeMapper ) );
+
+					} else {
+						schemas.putIfAbsent( responseSchemaName, buildSchema( info, schemas, customTypeMapper ) );
+
+					}
 
 				}
 
 			}
 
+			responses.put( statusCode, response );
+
 		} );
 
-		responses
-			.put(
-				"200",
-				Map
-					.of(
-						"description",
-						"Successful response",
-						"content",
-						responseContent
-					)
-			);
-
 		return responses;
+
+	}
+
+	private static String generateResponseDescription(
+		String statusCode
+	) {
+
+		return switch (statusCode) {
+			case "200" -> "Successful response";
+			case "201" -> "Created";
+			case "202" -> "Accepted";
+			case "204" -> "No content";
+			case "400" -> "Bad request";
+			case "401" -> "Unauthorized";
+			case "403" -> "Forbidden";
+			case "404" -> "Not found";
+			case "409" -> "Conflict";
+			case "422" -> "Unprocessable entity";
+			case "500" -> "Internal server error";
+			default -> "Response";
+
+		};
 
 	}
 
@@ -384,7 +431,7 @@ public class SwaggerGenerator {
 	}
 
 	private static Map<String, Object> buildSchema(
-		HandlerInfo.Info info, Map<String, Object> schemas
+		HandlerInfo.Info info, Map<String, Object> schemas, BiPredicate<Class<?>, Map<String, Object>> customTypeMapper
 	) {
 
 		Map<String, Object> schema = new LinkedHashMap<>();
@@ -397,7 +444,7 @@ public class SwaggerGenerator {
 
 		info.getFields().forEach( (fieldName, fieldInfo) -> {
 
-			Map<String, Object> fieldTypeMap = mapType( fieldInfo, schemas );
+			Map<String, Object> fieldTypeMap = mapType( fieldInfo, schemas, customTypeMapper );
 			Map<String, Object> property = new LinkedHashMap<>( fieldTypeMap );
 
 			if (fieldInfo.getDescription() != null) {
@@ -441,7 +488,7 @@ public class SwaggerGenerator {
 
 	@SuppressWarnings("unchecked")
 	private static Map<String, Object> mapType(
-		Info info, Map<String, Object> schemas
+		Info info, Map<String, Object> schemas, BiPredicate<Class<?>, Map<String, Object>> customTypeMapper
 	) {
 
 		Class<?> type = info.getType();
@@ -449,6 +496,11 @@ public class SwaggerGenerator {
 		String typeStr = null;
 		String format = null;
 		List<String> enumList = new ArrayList<>();
+
+		if (customTypeMapper != null && customTypeMapper.test( type, schema )) {
+			return schema;
+
+		}
 
 		if (type == null || type == Object.class) {
 			schema.put( "type", "object" );
@@ -459,7 +511,7 @@ public class SwaggerGenerator {
 		// Optional<T> 는 내부 T 로 내린다.
 		if (Optional.class.isAssignableFrom( type )) {
 
-			if (! info.getGenericTypes().isEmpty()) { return mapType( info.getGenericTypes().get( 0 ), schemas ); }
+			if (! info.getGenericTypes().isEmpty()) { return mapType( info.getGenericTypes().get( 0 ), schemas, customTypeMapper ); }
 
 			schema.put( "type", "object" );
 			return schema;
@@ -469,7 +521,7 @@ public class SwaggerGenerator {
 		// Mono<T> 는 응답 스키마에서 바깥 래퍼로 취급하지 않고 T 로 내린다.
 		if (Mono.class.isAssignableFrom( type )) {
 
-			if (! info.getGenericTypes().isEmpty()) { return mapType( info.getGenericTypes().get( 0 ), schemas ); }
+			if (! info.getGenericTypes().isEmpty()) { return mapType( info.getGenericTypes().get( 0 ), schemas, customTypeMapper ); }
 
 			schema.put( "type", "object" );
 			return schema;
@@ -481,7 +533,7 @@ public class SwaggerGenerator {
 			schema.put( "type", "object" );
 
 			if (info.getGenericTypes().size() >= 2) {
-				schema.put( "additionalProperties", mapType( info.getGenericTypes().get( 1 ), schemas ) );
+				schema.put( "additionalProperties", mapType( info.getGenericTypes().get( 1 ), schemas, customTypeMapper ) );
 
 			} else {
 				schema.put( "additionalProperties", true );
@@ -505,7 +557,7 @@ public class SwaggerGenerator {
 			schema.put( "type", "array" );
 
 			if (! info.getGenericTypes().isEmpty()) {
-				schema.put( "items", mapType( info.getGenericTypes().get( 0 ), schemas ) );
+				schema.put( "items", mapType( info.getGenericTypes().get( 0 ), schemas, customTypeMapper ) );
 
 			} else {
 				schema.put( "items", Map.of( "type", "object" ) );
@@ -601,10 +653,10 @@ public class SwaggerGenerator {
 			typeStr = "#/components/schemas/" + schemaName;
 
 			if (schemas.containsKey( schemaName ) && schemas.get( schemaName ) instanceof Map map) {
-				map.putAll( buildSchema( info, schemas ) );
+				map.putAll( buildSchema( info, schemas, customTypeMapper ) );
 
 			} else {
-				schemas.putIfAbsent( schemaName, buildSchema( info, schemas ) );
+				schemas.putIfAbsent( schemaName, buildSchema( info, schemas, customTypeMapper ) );
 
 			}
 

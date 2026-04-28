@@ -17,6 +17,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiPredicate;
 import java.util.stream.Stream;
 import org.benf.cfr.reader.api.CfrDriver;
 import com.byeolnaerim.watch.AbstractWatcher;
@@ -76,6 +77,8 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 		private final List<Class<?>> decompileJarClasses;
 
+		private final BiPredicate<Class<?>, Map<String, Object>> customTypeMapper;
+
 		private Config(
 						Builder b
 		) {
@@ -96,6 +99,7 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 			this.decompileJarPaths = List.copyOf( b.decompileJarPaths );
 			this.sourceClasspath = List.copyOf( b.sourceClasspath );
 			this.decompileJarClasses = List.copyOf( b.decompileJarClasses );
+			this.customTypeMapper = b.customTypeMapper;
 
 		}
 
@@ -141,6 +145,13 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 		}
 
+		/* customTypeMapper */
+		public BiPredicate<Class<?>, Map<String, Object>> customTypeMapper() {
+
+			return customTypeMapper;
+
+		}
+
 		/**
 		 * Creates a new Swagger watcher configuration builder.
 		 *
@@ -168,6 +179,8 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 			private final List<String> sourceClasspath = new ArrayList<>();
 
 			private final List<Class<?>> decompileJarClasses = new ArrayList<>();
+
+			private BiPredicate<Class<?>, Map<String, Object>> customTypeMapper;
 
 			/**
 			 * Sets the source directory to watch and analyze.
@@ -328,6 +341,28 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 			}
 
 			/**
+			 * Sets a custom type mapper.
+			 * <p>
+			 * The mapper receives the Java type and the OpenAPI schema map to mutate.
+			 * If it returns {@code true}, the default type mapping stops and the mutated
+			 * schema is used as-is.
+			 * </p>
+			 *
+			 * @param customTypeMapper
+			 *            custom type mapper
+			 *
+			 * @return this builder
+			 */
+			public Builder customTypeMapper(
+				BiPredicate<Class<?>, Map<String, Object>> customTypeMapper
+			) {
+
+				this.customTypeMapper = customTypeMapper;
+				return this;
+
+			}
+
+			/**
 			 * Builds an immutable {@link Config} instance.
 			 *
 			 * @return the built configuration
@@ -426,7 +461,7 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 					.thenComparing( RouteInfo::getHttpMethod )
 			);
 
-		String swaggerJson = SwaggerGenerator.generateSwaggerJson( routeInfos ); // Swagger JSON 생성
+		String swaggerJson = SwaggerGenerator.generateSwaggerJson( routeInfos, config.customTypeMapper() ); // Swagger JSON 생성 // Swagger JSON 생성
 		return swaggerJson;
 
 		// try (FileWriter writer = new FileWriter( config.swaggerOutputFile )) {

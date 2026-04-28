@@ -860,12 +860,10 @@ public class HandlerParser {
 		}
 
 		// response 파싱
-		// ok().contentType(...).body(...)
-		// 이런 체인 호출을 따라 올라가 body, bodyValue에 전달된 타입 파악
-		if (isOkResponseCallChain( inv )) {
-			// body(...) 또는 bodyValue(...) 호출 찾아 Response body 정보 추출
-			// MediaType, ResponseWrapper 등
-			parseResponseBodyFromOkChain( inv, handlerInfo );
+		// ok(), badRequest(), notFound(), noContent(), status(...)
+		// 이런 체인 호출을 따라 올라가 status code와 body/bodyValue에 전달된 타입 파악
+		if (isResponseCallChain( inv )) {
+			parseResponseBodyFromResponseChain( inv, handlerInfo );
 
 		}
 
@@ -1235,13 +1233,23 @@ public class HandlerParser {
 
 	}
 
-	private boolean isOkResponseCallChain(
+	private boolean isResponseCallChain(
 		CtInvocation<?> inv
 	) {
 
-		// ok().contentType(...).body(...) 체인 일부인지 파악
+		if (inv == null || inv.getExecutable() == null) {
+			return false;
+
+		}
+
 		String name = inv.getExecutable().getSimpleName();
-		return name.equals( "ok" ) || name.equals( "contentType" ) || name.equals( "body" ) || name.equals( "bodyValue" );
+
+		if (name.equals( "body" ) || name.equals( "bodyValue" ) || name.equals( "contentType" ) || name.equals( "build" )) {
+			return resolveResponseStatusCode( inv ) != null;
+
+		}
+
+		return resolveResponseStatusCode( inv ) != null;
 
 	}
 
@@ -1437,12 +1445,188 @@ public class HandlerParser {
 
 	}
 
-	private void parseResponseBodyFromOkChain(
+	private String resolveResponseStatusCode(
+		CtInvocation<?> inv
+	) {
+
+		CtInvocation<?> current = inv;
+
+		while (current != null) {
+			String name = current.getExecutable().getSimpleName();
+
+			String statusCode = switch (name) {
+				case "ok" -> "200";
+				case "created" -> "201";
+				case "accepted" -> "202";
+				case "noContent" -> "204";
+				case "badRequest" -> "400";
+				case "notFound" -> "404";
+				case "unprocessableEntity" -> "422";
+				default -> null;
+
+			};
+
+			if (statusCode != null) {
+				return statusCode;
+
+			}
+
+			if (name.equals( "status" ) && ! current.getArguments().isEmpty()) {
+				return extractStatusCodeArgument( current.getArguments().get( 0 ) );
+
+			}
+
+			if (current.getTarget() instanceof CtInvocation<?> targetInvocation) {
+				current = targetInvocation;
+
+			} else {
+				current = null;
+
+			}
+
+		}
+
+		return null;
+
+	}
+
+	private String extractStatusCodeArgument(
+		CtExpression<?> arg
+	) {
+
+		if (arg == null) {
+			return null;
+
+		}
+
+		if (arg instanceof CtLiteral<?> literal) {
+			Object value = literal.getValue();
+
+			if (value instanceof Number number) {
+				return String.valueOf( number.intValue() );
+
+			}
+
+			if (value instanceof String stringValue && stringValue.matches( "\\d{3}" )) {
+				return stringValue;
+
+			}
+
+		}
+
+		if (arg instanceof CtVariableRead<?> variableRead && variableRead.getVariable() != null && variableRead.getVariable().getDeclaration() instanceof CtLocalVariable<?> localVariable) {
+			return extractStatusCodeArgument( localVariable.getDefaultExpression() );
+
+		}
+
+		if (arg instanceof CtInvocation<?> invocation) {
+			String name = invocation.getExecutable().getSimpleName();
+
+			if ((name.equals( "valueOf" ) || name.equals( "status" )) && ! invocation.getArguments().isEmpty()) {
+				return extractStatusCodeArgument( invocation.getArguments().get( 0 ) );
+
+			}
+
+			if (name.equals( "value" ) && invocation.getTarget() != null) {
+				return extractHttpStatusCodeFromText( invocation.getTarget().toString() );
+
+			}
+
+		}
+
+		return extractHttpStatusCodeFromText( arg.toString() );
+
+	}
+
+	private String extractHttpStatusCodeFromText(
+		String text
+	) {
+
+		if (text == null || text.isBlank()) {
+			return null;
+
+		}
+
+		String normalized = text
+			.replace( "org.springframework.http.HttpStatus.", "" )
+			.replace( "HttpStatus.", "" )
+			.replace( "org.springframework.http.HttpStatusCode.", "" )
+			.replace( "HttpStatusCode.", "" )
+			.trim();
+
+		if (normalized.matches( "\\d{3}" )) {
+			return normalized;
+
+		}
+
+		if (normalized.startsWith( "valueOf(" ) && normalized.endsWith( ")" )) {
+			return extractHttpStatusCodeFromText(
+				normalized.substring( "valueOf(".length(), normalized.length() - 1 )
+			);
+
+		}
+
+		return switch (normalized) {
+			case "OK" -> "200";
+			case "CREATED" -> "201";
+			case "ACCEPTED" -> "202";
+			case "NO_CONTENT" -> "204";
+			case "BAD_REQUEST" -> "400";
+			case "UNAUTHORIZED" -> "401";
+			case "FORBIDDEN" -> "403";
+			case "NOT_FOUND" -> "404";
+			case "CONFLICT" -> "409";
+			case "UNPROCESSABLE_ENTITY" -> "422";
+			case "INTERNAL_SERVER_ERROR" -> "500";
+			case "BAD_GATEWAY" -> "502";
+			case "SERVICE_UNAVAILABLE" -> "503";
+			default -> null;
+
+		};
+
+	}
+
+	private void putResponseInfo(
+		HandlerInfo handlerInfo, CtInvocation<?> inv, String key, HandlerInfo.Info info
+	) {
+
+		handlerInfo.getResponseBodyInfo().put( key, info );
+
+		String statusCode = resolveResponseStatusCode( inv );
+
+		if (statusCode == null) {
+			statusCode = "200";
+
+		}
+
+		handlerInfo.getResponseInfoByStatusCode().put( statusCode, info );
+
+	}
+
+	private void putEmptyResponseInfo(
+		HandlerInfo handlerInfo, CtInvocation<?> inv
+	) {
+
+		String statusCode = resolveResponseStatusCode( inv );
+
+		if (statusCode != null) {
+			handlerInfo.getResponseInfoByStatusCode().putIfAbsent( statusCode, null );
+
+		}
+
+	}
+
+	private void parseResponseBodyFromResponseChain(
 		CtInvocation<?> inv, HandlerInfo handlerInfo
 	) {
 
-		// ok().contentType(...).body(...) or bodyValue(...)
+		// ok()/badRequest()/notFound()/noContent()/status(...).body(...) or bodyValue(...)
 		String name = inv.getExecutable().getSimpleName();
+
+		if (name.equals( "build" ) || name.equals( "noContent" )) {
+			putEmptyResponseInfo( handlerInfo, inv );
+
+		}
 
 		// @ResponseBody가 붙어있으면 그게 최우선
 		if ((name.equals( "body" ) || name.equals( "bodyValue" )) && ! inv.getArguments().isEmpty()) {
@@ -1584,29 +1768,29 @@ public class HandlerParser {
 
 				pInfo.setPosition( LayerPosition.RESPONSE_BODY );
 
-				handlerInfo
-					.getResponseBodyInfo()
-					.put(
-						pInfo.getType().getSimpleName(),
-						pInfo
-					);
+				putResponseInfo(
+					handlerInfo,
+					inv,
+					pInfo.getType().getSimpleName(),
+					pInfo
+				);
 
 			} else if (isParseFailedFlag) {
 
 				if (pInfo.getGenericTypes().isEmpty()) {
-					handlerInfo.getResponseBodyInfo().put( pInfo.getType().getSimpleName(), pInfo );
+					putResponseInfo( handlerInfo, inv, pInfo.getType().getSimpleName(), pInfo );
 
 				} else {
-					handlerInfo
-						.getResponseBodyInfo()
-						.put(
-							pInfo
-								.getGenericTypes()
-								.get( 0 )
-								.getType()
-								.getSimpleName(),
-							pInfo
-						);
+					putResponseInfo(
+						handlerInfo,
+						inv,
+						pInfo
+							.getGenericTypes()
+							.get( 0 )
+							.getType()
+							.getSimpleName(),
+						pInfo
+					);
 
 				}
 
@@ -1668,19 +1852,19 @@ public class HandlerParser {
 				}
 
 				if (finalInfo.getGenericTypes().isEmpty()) {
-					handlerInfo.getResponseBodyInfo().put( finalInfo.getType().getSimpleName(), finalInfo );
+					putResponseInfo( handlerInfo, inv, finalInfo.getType().getSimpleName(), finalInfo );
 
 				} else {
-					handlerInfo
-						.getResponseBodyInfo()
-						.put(
-							finalInfo
-								.getGenericTypes()
-								.get( 0 )
-								.getType()
-								.getSimpleName(),
-							finalInfo
-						);
+					putResponseInfo(
+						handlerInfo,
+						inv,
+						finalInfo
+							.getGenericTypes()
+							.get( 0 )
+							.getType()
+							.getSimpleName(),
+						finalInfo
+					);
 
 				}
 
@@ -1694,21 +1878,19 @@ public class HandlerParser {
 				CtTypeReference<?> valTypeRef = firstArg.getType();
 				HandlerInfo.Info pInfo = buildParamInfoFromTypeRef( valTypeRef );
 
-				handlerInfo.getResponseBodyInfo().put( pInfo.getType().getSimpleName(), pInfo );
-
 				if (valTypeRef != null) {
 					parseClassFields( valTypeRef, pInfo );
 
 				}
 
-				handlerInfo
-					.getResponseBodyInfo()
-					.put(
-						(pInfo.getType() != null && pInfo.getType() != Object.class)
-							? pInfo.getType().getSimpleName()
-							: (valTypeRef != null ? valTypeRef.getSimpleName() : "Object"),
-						pInfo
-					);
+				putResponseInfo(
+					handlerInfo,
+					inv,
+					(pInfo.getType() != null && pInfo.getType() != Object.class)
+						? pInfo.getType().getSimpleName()
+						: (valTypeRef != null ? valTypeRef.getSimpleName() : "Object"),
+					pInfo
+				);
 
 			}
 

@@ -27,6 +27,9 @@ public class HandlerInfo {
 	// Response Body 정보: response에 매핑될 타입이나 필드 정보
 	private Map<String, Info> responseBodyInfo = new HashMap<>();
 
+	// HTTP status code -> response body 정보. body가 없는 응답(noContent 등)은 value가 null이다.
+	private Map<String, Info> responseInfoByStatusCode = new HashMap<>();
+
 	// produces
 	private List<String> contentMediaTypes = new ArrayList<>();
 
@@ -60,6 +63,12 @@ public class HandlerInfo {
 		Map<String, Info> responseBodyInfo
 	) { this.responseBodyInfo = responseBodyInfo; }
 
+	public Map<String, Info> getResponseInfoByStatusCode() { return responseInfoByStatusCode; }
+
+	public void setResponseInfoByStatusCode(
+		Map<String, Info> responseInfoByStatusCode
+	) { this.responseInfoByStatusCode = responseInfoByStatusCode; }
+
 	public List<String> getContentMediaTypes() { return contentMediaTypes; }
 
 	public void setContentMediaTypes(
@@ -81,7 +90,7 @@ public class HandlerInfo {
 	@Override
 	public String toString() {
 
-		return "HandlerInfo{" + "requestBodyInfo=" + requestBodyInfo + ", queryStringInfo=" + queryStringInfo + ", pathVariableInfo=" + pathVariableInfo + ", responseBodyInfo=" + responseBodyInfo + ", contentMediaTypes=" + contentMediaTypes + ", headerParams=" + headerParams + ", cookieParams=" + cookieParams + '}';
+		return "HandlerInfo{" + "requestBodyInfo=" + requestBodyInfo + ", queryStringInfo=" + queryStringInfo + ", pathVariableInfo=" + pathVariableInfo + ", responseBodyInfo=" + responseBodyInfo + ", responseInfoByStatusCode=" + responseInfoByStatusCode + ", contentMediaTypes=" + contentMediaTypes + ", headerParams=" + headerParams + ", cookieParams=" + cookieParams + '}';
 
 	}
 
