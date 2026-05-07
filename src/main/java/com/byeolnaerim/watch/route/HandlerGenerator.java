@@ -656,13 +656,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 						if (methodName.isBlank()) {
 
-							if (! e.isLambdaNullReturn()) {
+							if (e.isHandlerNull() || e.isLambdaNullReturn()) {
 								e.httpMethod
 									.setArgument(
 										handlerIdx,
-										new NameExpr(
-											"request -> {return org.springframework.web.reactive.function.server.ServerResponse.ok().bodyValue(\"\");}"
-										)
+										StaticJavaParser
+											.parseExpression(
+												"request -> { return org.springframework.web.reactive.function.server.ServerResponse.ok().bodyValue(\"\"); }"
+											)
 									);
 
 							}
@@ -945,9 +946,10 @@ public class HandlerGenerator extends AbstractWatcher {
 						new BlockStmt()
 							.addStatement(
 								new ReturnStmt(
-									new NameExpr(
-										"\norg.springframework.web.reactive.function.server.ServerResponse.ok().bodyValue(\"\")\n"
-									)
+									StaticJavaParser
+										.parseExpression(
+											"org.springframework.web.reactive.function.server.ServerResponse.ok().bodyValue(\"\")"
+										)
 								)
 							)
 					)
@@ -1121,7 +1123,15 @@ public class HandlerGenerator extends AbstractWatcher {
 
 		}
 
-		public boolean isHandlerNull() { return this.handler == null || "null".startsWith( this.handler.trim() ) || "//".equals( this.handler.trim() ); }
+		public boolean isHandlerNull() {
+
+			if (this.handler == null)
+				return true;
+
+			String value = this.handler.trim();
+			return value.equals( "null" ) || value.equals( "//" );
+
+		}
 
 		public boolean isLambdaNullReturn() {
 
