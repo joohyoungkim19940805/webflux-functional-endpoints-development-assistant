@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.byeolnaerim.watch.document.common.TypeInfo;
 import spoon.reflect.reference.CtTypeReference;
 
 
@@ -100,7 +101,7 @@ public class HandlerInfo {
 	 * resolved type information, generic type metadata, nested field metadata,
 	 * documentation fields, and logical layer position.</p>
 	 */
-	public static class Info {
+	public static class Info implements TypeInfo<Info> {
 
 		private String name;
 

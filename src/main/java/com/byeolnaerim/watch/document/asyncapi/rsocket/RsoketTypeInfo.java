@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.byeolnaerim.watch.document.common.TypeInfo;
 import spoon.reflect.reference.CtTypeReference;
 
 
@@ -14,7 +15,7 @@ import spoon.reflect.reference.CtTypeReference;
  * including the resolved Java class when available, the Spoon type reference,
  * generic argument metadata, nested field metadata, description, and example values.</p>
  */
-public class RsoketTypeInfo {
+public class RsoketTypeInfo implements TypeInfo<RsoketTypeInfo> {
 
 	private String name;
 

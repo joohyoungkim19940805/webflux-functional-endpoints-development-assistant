@@ -5,10 +5,13 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import com.byeolnaerim.watch.RouteUtil;
 import com.byeolnaerim.watch.document.anntation.SelectedResponseBody;
+import com.byeolnaerim.watch.document.common.RsoketTypeInfoParser;
+import com.byeolnaerim.watch.document.common.TypeInfoParser;
 import spoon.Launcher;
 import spoon.reflect.code.CtExpression;
 import spoon.reflect.code.CtInvocation;
@@ -50,6 +53,26 @@ import spoon.reflect.visitor.filter.TypeFilter;
 public class RsoketParser {
 
 	private final Set<String> processedTypes = new HashSet<>();
+
+	private final Map<String, CtType<?>> externalTypes;
+
+	private final RsoketTypeInfoParser typeInfoParser;
+
+	public RsoketParser() {
+
+		this.externalTypes = Map.of();
+		this.typeInfoParser = new RsoketTypeInfoParser( this.externalTypes );
+
+	}
+
+	public RsoketParser(
+						Map<String, CtType<?>> externalTypes
+	) {
+
+		this.externalTypes = externalTypes != null ? externalTypes : Map.of();
+		this.typeInfoParser = new RsoketTypeInfoParser( this.externalTypes );
+
+	}
 
 	/**
 	 * Scans the given source directory with Spoon and extracts parsed RSocket route metadata.
@@ -407,45 +430,10 @@ public class RsoketParser {
 		CtTypeReference<?> typeRef
 	) {
 
-		if (typeRef == null) { return Object.class; }
-
-		String qName = typeRef.getQualifiedName();
-
-		if (qName == null) { return Object.class; }
-
-		switch (qName) {
-			case "boolean":
-				return boolean.class;
-			case "byte":
-				return byte.class;
-			case "short":
-				return short.class;
-			case "int":
-				return int.class;
-			case "long":
-				return long.class;
-			case "float":
-				return float.class;
-			case "double":
-				return double.class;
-			case "char":
-				return char.class;
-			case "void":
-				return void.class;
-			default:
-				break;
-
-		}
-
-		try {
-			return Class.forName( qName );
-
-		} catch (ClassNotFoundException e) {
-			return Object.class;
-
-		}
+		return TypeInfoParser.loadClassFromTypeReference( typeRef );
 
 	}
+
 
 	/**
 	 * CtTypeReference를 RsoketTypeInfo로 변환. 제너릭은 recursive.
@@ -454,50 +442,7 @@ public class RsoketParser {
 		CtTypeReference<?> typeRef
 	) {
 
-		RsoketTypeInfo pInfo = new RsoketTypeInfo();
-
-		if (typeRef == null) {
-			pInfo.setType( Object.class );
-			return pInfo;
-
-		}
-
-		Class<?> rawType = loadClassFromTypeReference( typeRef );
-		pInfo.setType( rawType );
-		pInfo.setTypeRef( typeRef );
-
-		List<CtTypeReference<?>> actualTypeArgs = typeRef.getActualTypeArguments();
-
-		if (shouldParseFields( typeRef, rawType ) && pInfo.getFields().isEmpty()) {
-			parseClassFields( typeRef, pInfo );
-
-		}
-
-		if (actualTypeArgs != null && ! actualTypeArgs.isEmpty()) {
-			List<RsoketTypeInfo> genericParams = new ArrayList<>();
-
-			for (CtTypeReference<?> argRef : actualTypeArgs) {
-				RsoketTypeInfo genericParamInfo = buildParamInfoFromTypeRef( argRef );
-
-				if (RouteUtil.isPojo( genericParamInfo.getType() )) {
-					parseClassFields( argRef, genericParamInfo );
-
-					if (genericParamInfo.getFields().isEmpty()) {
-						parseClassFields( argRef.getFactory().Type().createReference( genericParamInfo.getType() ), genericParamInfo );
-
-					}
-
-				}
-
-				genericParams.add( genericParamInfo );
-
-			}
-
-			pInfo.setGenericTypes( genericParams );
-
-		}
-
-		return pInfo;
+		return typeInfoParser.buildInfo( typeRef );
 
 	}
 
@@ -521,74 +466,7 @@ public class RsoketParser {
 		CtTypeReference<?> wrapperRef, RsoketTypeInfo pInfo
 	) {
 
-		if (wrapperRef == null || wrapperRef.getQualifiedName() == null) { return; }
-
-		if (processedTypes.contains( wrapperRef.getQualifiedName() )) { return; }
-
-		processedTypes.add( wrapperRef.getQualifiedName() );
-
-		wrapperRef.getDeclaredFields().forEach( field -> {
-			CtTypeReference<?> fieldType = field.getType();
-
-			// generic self-reference 방지
-			var args = fieldType.getActualTypeArguments();
-
-			if (args != null && args.stream().anyMatch( e -> e.getSimpleName().equals( wrapperRef.getSimpleName() ) )) {
-				RsoketTypeInfo selfRefInfo = buildPartialInfo( field, fieldType );
-				pInfo.addField( field.getSimpleName(), selfRefInfo );
-				return;
-
-			}
-
-			// direct self-reference 방지
-			if (fieldType.getQualifiedName() != null && fieldType.getQualifiedName().equals( wrapperRef.getQualifiedName() )) {
-				RsoketTypeInfo selfRefInfo = buildPartialInfo( field, fieldType );
-				pInfo.addField( field.getSimpleName(), selfRefInfo );
-				return;
-
-			}
-
-			RsoketTypeInfo fieldInfo = buildParamInfoFromTypeRef( fieldType );
-
-			if (fieldInfo.getName() == null) {
-				fieldInfo.setName( field.getSimpleName() );
-
-			}
-
-			if (fieldInfo.getType() != null && fieldInfo.getType().isEnum()) {
-				fieldInfo.setExample( RouteUtil.parserEnumValues( fieldInfo.getType() ).toString() );
-
-			} else if (fieldInfo
-				.getType() != null && (fieldInfo.getType().isRecord() || (fieldInfo.getType().getPackageName() != null && RouteUtil.isPojo( fieldInfo.getType() )))) {
-				parseClassFields( wrapperRef.getFactory().Type().createReference( fieldInfo.getType() ), fieldInfo );
-
-			}
-
-			pInfo.addField( field.getSimpleName(), fieldInfo );
-
-		} );
-
-		CtType<?> typeDeclaration = wrapperRef.getTypeDeclaration();
-
-		if (typeDeclaration != null) {
-			typeDeclaration
-				.getMethods()
-				.stream()
-				.filter( method -> method.getParameters().isEmpty() )
-				.filter( method -> method.getType() != null )
-				.filter( method -> ! "void".equals( method.getType().getQualifiedName() ) )
-				.filter( method -> isLikelyRecordAccessor( method, pInfo ) )
-				.forEach( method -> {
-					String name = method.getSimpleName();
-					RsoketTypeInfo fieldInfo = buildParamInfoFromTypeRef( method.getType() );
-					fieldInfo.setName( name );
-					pInfo.addField( name, fieldInfo );
-
-				} );
-
-		}
-
-		processedTypes.remove( wrapperRef.getQualifiedName() );
+		typeInfoParser.parseFields( wrapperRef, pInfo );
 
 	}
 

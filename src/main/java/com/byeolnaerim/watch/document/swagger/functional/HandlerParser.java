@@ -3,12 +3,10 @@ package com.byeolnaerim.watch.document.swagger.functional;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.http.MediaType;
@@ -16,6 +14,8 @@ import com.byeolnaerim.watch.RouteUtil;
 import com.byeolnaerim.watch.document.anntation.SelectedRequestParam;
 import com.byeolnaerim.watch.document.anntation.SelectedRequestPath;
 import com.byeolnaerim.watch.document.anntation.SelectedResponseBody;
+import com.byeolnaerim.watch.document.common.HandlerTypeInfoParser;
+import com.byeolnaerim.watch.document.common.TypeInfoParser;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo.LayerPosition;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -63,9 +63,12 @@ public class HandlerParser {
 	 */
 	private final Map<String, CtType<?>> externalTypes;
 
+	private final HandlerTypeInfoParser typeInfoParser;
+
 	public HandlerParser() {
 
 		this.externalTypes = Map.of();
+		this.typeInfoParser = new HandlerTypeInfoParser( this.externalTypes );
 
 	}
 
@@ -74,6 +77,7 @@ public class HandlerParser {
 	) {
 
 		this.externalTypes = (externalTypes != null) ? externalTypes : Map.of();
+		this.typeInfoParser = new HandlerTypeInfoParser( this.externalTypes );
 
 	}
 
@@ -225,45 +229,7 @@ public class HandlerParser {
 		String qualifiedName, String simpleName
 	) {
 
-		if (externalTypes == null || externalTypes.isEmpty()) {
-			return null;
-
-		}
-
-		if (qualifiedName != null && ! qualifiedName.isBlank()) {
-			CtType<?> exact = externalTypes.get( qualifiedName );
-
-			if (exact != null) {
-				return exact;
-
-			}
-
-		}
-
-		// simpleName fallback은 유일할 때만
-		if (simpleName != null && ! simpleName.isBlank()) {
-			CtType<?> found = null;
-
-			for (CtType<?> type : externalTypes.values()) {
-
-				if (simpleName.equals( type.getSimpleName() )) {
-
-					if (found != null) {
-						return null; // ambiguous
-
-					}
-
-					found = type;
-
-				}
-
-			}
-
-			return found;
-
-		}
-
-		return null;
+		return TypeInfoParser.findExternalDeclaringType( qualifiedName, simpleName, externalTypes );
 
 	}
 
@@ -271,44 +237,7 @@ public class HandlerParser {
 		CtTypeReference<?> typeRef
 	) {
 
-		if (typeRef == null) {
-			return null;
-
-		}
-
-		CtType<?> typeDecl = typeRef.getTypeDeclaration();
-
-		if (typeDecl != null && ! typeDecl.isShadow()) {
-			return typeRef;
-
-		}
-
-		CtType<?> externalType = findExternalDeclaringType(
-			typeRef.getQualifiedName(),
-			typeRef.getSimpleName()
-		);
-
-		if (externalType == null) {
-			return typeRef;
-
-		}
-
-		CtTypeReference<?> resolvedRef = externalType.getReference().clone();
-
-		List<CtTypeReference<?>> actualTypeArgs = typeRef.getActualTypeArguments();
-
-		if (actualTypeArgs != null && ! actualTypeArgs.isEmpty()) {
-			resolvedRef
-				.setActualTypeArguments(
-					actualTypeArgs
-						.stream()
-						.map( this::resolveSourceBackedTypeReference )
-						.collect( Collectors.toList() )
-				);
-
-		}
-
-		return resolvedRef;
+		return TypeInfoParser.resolveSourceBackedTypeReference( typeRef, externalTypes );
 
 	}
 
@@ -316,22 +245,7 @@ public class HandlerParser {
 		CtTypeReference<?> typeRef
 	) {
 
-		if (typeRef == null) {
-			return null;
-
-		}
-
-		CtType<?> typeDecl = typeRef.getTypeDeclaration();
-
-		if (typeDecl != null && ! typeDecl.isShadow()) {
-			return typeDecl;
-
-		}
-
-		return findExternalDeclaringType(
-			typeRef.getQualifiedName(),
-			typeRef.getSimpleName()
-		);
+		return TypeInfoParser.resolveSourceBackedType( typeRef, externalTypes );
 
 	}
 
@@ -942,51 +856,7 @@ public class HandlerParser {
 		CtTypeReference<?> typeRef
 	) {
 
-		if (typeRef == null) {
-			return Object.class;
-
-		}
-
-		String qName = typeRef.getQualifiedName();
-
-		if (qName == null || qName.isBlank()) {
-			return Object.class;
-
-		}
-
-		// Primitive 타입 처리
-		switch (qName) {
-			case "boolean":
-				return boolean.class;
-			case "byte":
-				return byte.class;
-			case "short":
-				return short.class;
-			case "int":
-				return int.class;
-			case "long":
-				return long.class;
-			case "float":
-				return float.class;
-			case "double":
-				return double.class;
-			case "char":
-				return char.class;
-			case "void":
-				return void.class;
-			default:
-				// primitive 타입이 아닌 경우 Class.forName으로 로딩 시도
-				break;
-
-		}
-
-		try {
-			return Class.forName( qName );
-
-		} catch (ClassNotFoundException e) {
-			return Object.class;
-
-		}
+		return TypeInfoParser.loadClassFromTypeReference( typeRef );
 
 	}
 
@@ -998,55 +868,7 @@ public class HandlerParser {
 		CtTypeReference<?> typeRef
 	) {
 
-		typeRef = resolveSourceBackedTypeReference( typeRef );
-
-		HandlerInfo.Info pInfo = new HandlerInfo.Info();
-
-		if (typeRef == null) {
-			pInfo.setType( Object.class );
-			return pInfo;
-
-		}
-
-		// 기본 타입 설정
-		Class<?> rawType = loadClassFromTypeReference( typeRef );
-		pInfo.setType( rawType );
-		pInfo.setTypeRef( typeRef );
-
-		// 제너릭 타입 파라미터 처리
-		List<CtTypeReference<?>> actualTypeArgs = typeRef.getActualTypeArguments();
-
-		if (actualTypeArgs != null && ! actualTypeArgs.isEmpty()) {
-			List<HandlerInfo.Info> genericParams = new ArrayList<>();
-
-			for (CtTypeReference<?> argRef : actualTypeArgs) {
-				CtTypeReference<?> resolvedArgRef = resolveSourceBackedTypeReference( argRef );
-
-				HandlerInfo.Info genericParamInfo = buildParamInfoFromTypeRef( resolvedArgRef );
-				genericParamInfo.setPosition( LayerPosition.GENERIC );
-
-				if (RouteUtil.isPojo( genericParamInfo.getType() )) {
-					parseClassFields( resolvedArgRef, genericParamInfo );
-
-					if (genericParamInfo.getFields().isEmpty()) {
-						parseClassFields(
-							resolvedArgRef.getFactory().Type().createReference( genericParamInfo.getType() ),
-							genericParamInfo
-						);
-
-					}
-
-				}
-
-				genericParams.add( genericParamInfo );
-
-			}
-
-			pInfo.setGenericTypes( genericParams );
-
-		}
-
-		return pInfo;
+		return typeInfoParser.buildInfo( typeRef );
 
 	}
 
@@ -2368,96 +2190,10 @@ public class HandlerParser {
 	}
 
 	private void parseClassFields(
-		CtTypeReference<?> _wrapperRef, HandlerInfo.Info pInfo
+		CtTypeReference<?> wrapperRef, HandlerInfo.Info pInfo
 	) {
 
-		if (_wrapperRef == null) { return; }
-
-		CtTypeReference<?> wrapperRef = resolveSourceBackedTypeReference( _wrapperRef );
-
-		if (wrapperRef == null || wrapperRef.getQualifiedName() == null) { return; }
-
-		// 이미 처리된 타입이면 중단 (순환 참조 방지)
-		if (processedTypes.contains( wrapperRef.getQualifiedName() )) { return; }
-
-		processedTypes.add( wrapperRef.getQualifiedName() );
-
-		try {
-			CtType<?> wrapperTypeDecl = resolveSourceBackedType( wrapperRef );
-
-			if (wrapperTypeDecl == null) { return; }
-
-			CtTypeReference<?> superClassRef = resolveSourceBackedTypeReference( wrapperTypeDecl.getSuperclass() );
-
-			if (superClassRef != null && superClassRef.getQualifiedName() != null && ! "java.lang.Object".equals( superClassRef.getQualifiedName() )) {
-				parseClassFields( superClassRef, pInfo );
-
-			}
-
-			Optional.ofNullable( wrapperTypeDecl.getFields() ).orElse( Collections.emptyList() ).forEach( field -> {
-
-				if (field == null || field.getType() == null || field.isStatic()) { return; }
-
-				CtTypeReference<?> fieldType = resolveGenericFieldType(
-					wrapperRef,
-					wrapperTypeDecl,
-					field.getType(),
-					pInfo
-				);
-
-				if (fieldType == null || fieldType.getQualifiedName() == null) { return; }
-
-				// 제너릭 타입이 자기 자신을 참조하는 경우 방지
-				if (fieldType
-					.getActualTypeArguments()
-					.stream()
-					.anyMatch( e -> wrapperRef.getQualifiedName().equals( e.getQualifiedName() ) )) {
-
-					HandlerInfo.Info selfRefInfo = buildPartialInfo( field.getReference(), fieldType );
-					pInfo.addField( field.getSimpleName(), selfRefInfo );
-					return;
-
-				}
-
-				// 자기 자신을 직접 참조하는 경우 방지
-				if (wrapperRef.getQualifiedName().equals( fieldType.getQualifiedName() )) {
-					HandlerInfo.Info selfRefInfo = buildPartialInfo( field.getReference(), fieldType );
-					pInfo.addField( field.getSimpleName(), selfRefInfo );
-					return;
-
-				}
-
-				HandlerInfo.Info fieldInfo = buildParamInfoFromTypeRef( fieldType );
-				fieldInfo.setPosition( LayerPosition.FIELDS );
-				fieldInfo.setName( field.getSimpleName() );
-
-				Class<?> fieldClass = fieldInfo.getType();
-
-				if (fieldClass != null && fieldClass.isEnum()) {
-					fieldInfo.setExample( RouteUtil.parserEnumValues( fieldClass ).toString() );
-
-				} else {
-					CtType<?> nestedTypeDecl = resolveSourceBackedType( fieldType );
-					String qName = fieldType.getQualifiedName();
-
-					boolean canDescend = nestedTypeDecl != null && qName != null && ! qName.startsWith( "java." ) && ! qName.startsWith( "javax." ) && ! qName.startsWith( "jakarta." ) && ! qName
-						.startsWith( "reactor." );
-
-					if (canDescend) {
-						parseClassFields( fieldType, fieldInfo );
-
-					}
-
-				}
-
-				pInfo.addField( field.getSimpleName(), fieldInfo );
-
-			} );
-
-		} finally {
-			processedTypes.remove( wrapperRef.getQualifiedName() );
-
-		}
+		typeInfoParser.parseFields( wrapperRef, pInfo );
 
 	}
 

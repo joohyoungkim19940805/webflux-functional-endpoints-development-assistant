@@ -13,6 +13,8 @@ import java.util.stream.Collectors;
 import com.byeolnaerim.watch.document.anntation.SelectedRequestParam;
 import com.byeolnaerim.watch.document.anntation.SelectedRequestPath;
 import com.byeolnaerim.watch.document.anntation.SelectedResponseBody;
+import com.byeolnaerim.watch.document.common.HandlerTypeInfoParser;
+import com.byeolnaerim.watch.document.common.TypeInfoParser;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo.LayerPosition;
 import com.byeolnaerim.watch.document.swagger.functional.RouteInfo;
@@ -24,11 +26,8 @@ import spoon.reflect.code.CtLiteral;
 import spoon.reflect.code.CtNewArray;
 import spoon.reflect.declaration.CtAnnotation;
 import spoon.reflect.declaration.CtElement;
-import spoon.reflect.declaration.CtField;
 import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.declaration.CtParameter;
-import spoon.reflect.declaration.CtRecord;
-import spoon.reflect.declaration.CtRecordComponent;
 import spoon.reflect.declaration.CtType;
 import spoon.reflect.factory.Factory;
 import spoon.reflect.reference.CtTypeReference;
@@ -646,33 +645,7 @@ public final class MvcParser {
 		CtTypeReference<?> _typeRef, Map<String, CtType<?>> externalTypes
 	) {
 
-		CtTypeReference<?> typeRef = resolveSourceBackedTypeReference( _typeRef, externalTypes );
-
-		HandlerInfo.Info info = new HandlerInfo.Info();
-		info.setTypeRef( typeRef );
-
-		Class<?> clazz = loadClassFromTypeReference( typeRef );
-		info.setType( clazz );
-		info.setName( typeRef != null ? typeRef.getSimpleName() : "Object" );
-		info.setRequired( Boolean.TRUE );
-		info.setNullable( Boolean.FALSE );
-
-		// generics
-		if (typeRef != null && typeRef.getActualTypeArguments() != null && ! typeRef.getActualTypeArguments().isEmpty()) {
-			List<HandlerInfo.Info> generics = new ArrayList<>();
-
-			for (CtTypeReference<?> ga : typeRef.getActualTypeArguments()) {
-				HandlerInfo.Info gi = buildParamInfoFromTypeRef( ga, externalTypes );
-				gi.setPosition( LayerPosition.GENERIC );
-				generics.add( gi );
-
-			}
-
-			info.setGenericTypes( generics );
-
-		}
-
-		return info;
+		return new HandlerTypeInfoParser( externalTypes ).buildInfo( _typeRef );
 
 	}
 
@@ -700,86 +673,7 @@ public final class MvcParser {
 		CtTypeReference<?> _typeRef, HandlerInfo.Info target, Set<String> visited, Map<String, CtType<?>> externalTypes
 	) {
 
-		if (_typeRef == null || target == null)
-			return;
-
-		CtTypeReference<?> typeRef = resolveSourceBackedTypeReference( _typeRef, externalTypes );
-
-		if (typeRef == null)
-			return;
-
-		// List/Map 같은 컨테이너면 내부 제너릭을 파싱하는게 더 의미있음
-		String qn = typeRef.getQualifiedName();
-
-		if (qn != null && (qn.startsWith( "java.util.List" ) || qn.startsWith( "java.util.Set" ))) {
-
-			if (typeRef.getActualTypeArguments() != null && ! typeRef.getActualTypeArguments().isEmpty()) {
-				CtTypeReference<?> inner = typeRef.getActualTypeArguments().get( 0 );
-				// inner schema 확장
-				HandlerInfo.Info innerInfo = buildParamInfoFromTypeRef( inner, externalTypes );
-				parseClassFieldsSafely( inner, innerInfo, visited, externalTypes );
-				return;
-
-			}
-
-		}
-
-		if (! isComplexPojo( typeRef ))
-			return;
-
-		String key = typeRef.getQualifiedName();
-		if (key == null)
-			key = typeRef.getSimpleName();
-		if (key == null)
-			key = "Object";
-		if (visited.contains( key ))
-			return;
-		visited.add( key );
-
-		CtType<?> decl = resolveSourceBackedType( typeRef, externalTypes );
-		if (decl == null)
-			return;
-
-		CtTypeReference<?> superClassRef = resolveSourceBackedTypeReference( decl.getSuperclass(), externalTypes );
-
-		if (superClassRef != null && superClassRef.getQualifiedName() != null && ! "java.lang.Object".equals( superClassRef.getQualifiedName() )) {
-			parseClassFieldsSafely( superClassRef, target, visited, externalTypes );
-
-		}
-
-		// record 지원
-		if (decl instanceof CtRecord rec) {
-
-			for (CtRecordComponent rc : rec.getRecordComponents()) {
-				if (rc == null || rc.getType() == null)
-					continue;
-				String fn = rc.getSimpleName();
-				HandlerInfo.Info fi = buildParamInfoFromTypeRef( rc.getType(), externalTypes );
-				fi.setName( fn );
-				fi.setPosition( LayerPosition.FIELDS );
-				parseNestedTypeIfNeeded( fi, visited, externalTypes );
-				target.getFields().put( fn, fi );
-
-			}
-
-			return;
-
-		}
-
-		for (CtField<?> f : decl.getFields()) {
-			if (f == null || f.getType() == null)
-				continue;
-			if (f.isStatic())
-				continue;
-
-			String fn = f.getSimpleName();
-			HandlerInfo.Info fi = buildParamInfoFromTypeRef( f.getType(), externalTypes );
-			fi.setName( fn );
-			fi.setPosition( LayerPosition.FIELDS );
-			parseNestedTypeIfNeeded( fi, visited, externalTypes );
-			target.getFields().put( fn, fi );
-
-		}
+		new HandlerTypeInfoParser( externalTypes ).parseFields( _typeRef, target );
 
 	}
 
@@ -820,34 +714,7 @@ public final class MvcParser {
 		CtTypeReference<?> typeRef, Map<String, CtType<?>> externalTypes
 	) {
 
-		if (typeRef == null)
-			return null;
-
-		CtType<?> decl = typeRef.getTypeDeclaration();
-
-		if (decl != null && ! decl.isShadow())
-			return typeRef;
-
-		CtType<?> externalType = findExternalDeclaringType( typeRef.getQualifiedName(), typeRef.getSimpleName(), externalTypes );
-
-		if (externalType == null)
-			return typeRef;
-
-		CtTypeReference<?> resolvedRef = externalType.getReference().clone();
-
-		if (typeRef.getActualTypeArguments() != null && ! typeRef.getActualTypeArguments().isEmpty()) {
-			resolvedRef
-				.setActualTypeArguments(
-					typeRef
-						.getActualTypeArguments()
-						.stream()
-						.map( e -> resolveSourceBackedTypeReference( e, externalTypes ) )
-						.collect( Collectors.toList() )
-				);
-
-		}
-
-		return resolvedRef;
+		return TypeInfoParser.resolveSourceBackedTypeReference( typeRef, externalTypes );
 
 	}
 
@@ -855,17 +722,7 @@ public final class MvcParser {
 		CtTypeReference<?> typeRef, Map<String, CtType<?>> externalTypes
 	) {
 
-		CtTypeReference<?> resolvedRef = resolveSourceBackedTypeReference( typeRef, externalTypes );
-
-		if (resolvedRef == null)
-			return null;
-
-		CtType<?> decl = resolvedRef.getTypeDeclaration();
-
-		if (decl != null && ! decl.isShadow())
-			return decl;
-
-		return findExternalDeclaringType( resolvedRef.getQualifiedName(), resolvedRef.getSimpleName(), externalTypes );
+		return TypeInfoParser.resolveSourceBackedType( typeRef, externalTypes );
 
 	}
 
@@ -873,32 +730,7 @@ public final class MvcParser {
 		String qualifiedName, String simpleName, Map<String, CtType<?>> externalTypes
 	) {
 
-		if (externalTypes == null || externalTypes.isEmpty())
-			return null;
-
-		if (qualifiedName != null && ! qualifiedName.isBlank()) {
-			CtType<?> exact = externalTypes.get( qualifiedName );
-
-			if (exact != null)
-				return exact;
-
-		}
-
-		if (simpleName == null || simpleName.isBlank())
-			return null;
-
-		CtType<?> found = null;
-
-		for (CtType<?> type : externalTypes.values()) {
-			if (! simpleName.equals( type.getSimpleName() ))
-				continue;
-			if (found != null)
-				return null;
-			found = type;
-
-		}
-
-		return found;
+		return TypeInfoParser.findExternalDeclaringType( qualifiedName, simpleName, externalTypes );
 
 	}
 
@@ -906,38 +738,7 @@ public final class MvcParser {
 		CtTypeReference<?> tr
 	) {
 
-		if (tr == null)
-			return false;
-
-		String qn = tr.getQualifiedName();
-		if (qn == null)
-			return false;
-
-		// primitive/boxed/String/Number/Date/UUID 등은 제외
-		Class<?> cls = loadClassFromTypeReference( tr );
-
-		if (cls != Object.class) {
-			if (cls.isPrimitive())
-				return false;
-			if (cls == String.class)
-				return false;
-			if (Number.class.isAssignableFrom( cls ))
-				return false;
-			if (Boolean.class == cls || Character.class == cls)
-				return false;
-			if (Enum.class.isAssignableFrom( cls ))
-				return false;
-
-		}
-
-		// java.* 기본타입 제외
-		if (qn.startsWith( "java." ) || qn.startsWith( "javax." ) || qn.startsWith( "jakarta." )) {
-			// 단, Map/List처럼 제너릭이 meaningful한 경우는 위에서 별도 처리
-			return false;
-
-		}
-
-		return true;
+		return TypeInfoParser.isComplexPojo( tr );
 
 	}
 
@@ -945,36 +746,7 @@ public final class MvcParser {
 		CtTypeReference<?> tr
 	) {
 
-		if (tr == null)
-			return Object.class;
-
-		String qn = tr.getQualifiedName();
-		if (qn == null)
-			return Object.class;
-
-		// primitives
-		return switch (qn) {
-			case "boolean" -> boolean.class;
-			case "byte" -> byte.class;
-			case "short" -> short.class;
-			case "int" -> int.class;
-			case "long" -> long.class;
-			case "float" -> float.class;
-			case "double" -> double.class;
-			case "char" -> char.class;
-			default -> {
-
-				try {
-					yield Class.forName( qn );
-
-				} catch (Throwable ignore) {
-					yield Object.class;
-
-				}
-
-			}
-
-		};
+		return TypeInfoParser.loadClassFromTypeReference( tr );
 
 	}
 
