@@ -17,7 +17,7 @@ public final class HandlerTypeInfoParser extends TypeInfoParser<HandlerInfo.Info
 	}
 
 	public HandlerTypeInfoParser(
-		Map<String, CtType<?>> externalTypes
+									Map<String, CtType<?>> externalTypes
 	) {
 
 		super( externalTypes );
@@ -36,8 +36,8 @@ public final class HandlerTypeInfoParser extends TypeInfoParser<HandlerInfo.Info
 		HandlerInfo.Info info
 	) {
 
-		info.setRequired( Boolean.TRUE );
-		info.setNullable( Boolean.FALSE );
+		info.setRequired( Boolean.FALSE );
+		info.setNullable( Boolean.TRUE );
 
 	}
 

@@ -451,8 +451,8 @@ public final class MvcParser {
 
 		// default
 		c.name = p.getSimpleName();
-		c.required = Boolean.TRUE;
-		c.nullable = Boolean.FALSE;
+		c.required = Boolean.FALSE;
+		c.nullable = Boolean.TRUE;
 		c.defaultValue = null;
 		c.typeRef = p.getType();
 		c.position = LayerPosition.REQUEST_STRING;
@@ -477,6 +477,8 @@ public final class MvcParser {
 
 		if (isPathVar) {
 			c.kind = ParamKind.PATH;
+			c.required = Boolean.TRUE;
+			c.nullable = Boolean.FALSE;
 			c.position = LayerPosition.REQUEST_PATH;
 			applySpringLikeNameRequiredDefault( p, "PathVariable", c );
 			return c;
