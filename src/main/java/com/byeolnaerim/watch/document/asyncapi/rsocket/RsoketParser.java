@@ -1,4 +1,4 @@
-package com.byeolnaerim.watch.document.asyncapi.rsoket;
+package com.byeolnaerim.watch.document.asyncapi.rsocket;
 
 
 import java.io.File;
@@ -468,6 +468,11 @@ public class RsoketParser {
 
 		List<CtTypeReference<?>> actualTypeArgs = typeRef.getActualTypeArguments();
 
+		if (shouldParseFields( typeRef, rawType ) && pInfo.getFields().isEmpty()) {
+			parseClassFields( typeRef, pInfo );
+
+		}
+
 		if (actualTypeArgs != null && ! actualTypeArgs.isEmpty()) {
 			List<RsoketTypeInfo> genericParams = new ArrayList<>();
 
@@ -493,6 +498,22 @@ public class RsoketParser {
 		}
 
 		return pInfo;
+
+	}
+
+	private boolean shouldParseFields(
+		CtTypeReference<?> typeRef, Class<?> rawType
+	) {
+
+		if (typeRef == null) { return false; }
+
+		String qName = typeRef.getQualifiedName();
+
+		if (qName == null || qName.startsWith( "java." ) || qName.startsWith( "javax." ) || qName.startsWith( "jakarta." ) || qName.startsWith( "reactor." )) { return false; }
+
+		if (rawType != null && rawType != Object.class && RouteUtil.isPojo( rawType )) { return true; }
+
+		return typeRef.getTypeDeclaration() != null;
 
 	}
 
@@ -547,7 +568,47 @@ public class RsoketParser {
 
 		} );
 
+		CtType<?> typeDeclaration = wrapperRef.getTypeDeclaration();
+
+		if (typeDeclaration != null) {
+			typeDeclaration
+				.getMethods()
+				.stream()
+				.filter( method -> method.getParameters().isEmpty() )
+				.filter( method -> method.getType() != null )
+				.filter( method -> ! "void".equals( method.getType().getQualifiedName() ) )
+				.filter( method -> isLikelyRecordAccessor( method, pInfo ) )
+				.forEach( method -> {
+					String name = method.getSimpleName();
+					RsoketTypeInfo fieldInfo = buildParamInfoFromTypeRef( method.getType() );
+					fieldInfo.setName( name );
+					pInfo.addField( name, fieldInfo );
+
+				} );
+
+		}
+
 		processedTypes.remove( wrapperRef.getQualifiedName() );
+
+	}
+
+	private boolean isLikelyRecordAccessor(
+		CtMethod<?> method, RsoketTypeInfo ownerInfo
+	) {
+
+		String name = method.getSimpleName();
+
+		if (name == null || name.isBlank()) { return false; }
+
+		if (ownerInfo.getFields().containsKey( name )) { return false; }
+
+		if (List.of( "toString", "hashCode", "clone", "getClass" ).contains( name )) { return false; }
+
+		if ("equals".equals( name )) { return false; }
+
+		if (name.startsWith( "get" ) || name.startsWith( "set" ) || name.startsWith( "is" )) { return false; }
+
+		return true;
 
 	}
 

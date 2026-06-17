@@ -1,4 +1,4 @@
-package com.byeolnaerim.watch.document.asyncapi.rsoket;
+package com.byeolnaerim.watch.document.asyncapi.rsocket;
 
 
 import java.io.IOException;
@@ -14,57 +14,49 @@ import reactor.core.scheduler.Schedulers;
 
 
 /**
- * Watches source files and regenerates a simplified {@code rsoket.json} document
- * for parsed RSocket endpoints.
+ * Watches source files and regenerates an AsyncAPI JSON document for RSocket endpoints.
+ * <p>This watcher parses {@code @Controller}/{@code @MessageMapping}-based RSocket routes,
+ * sorts them deterministically, generates AsyncAPI JSON, and writes the output file only
+ * when its content has changed.</p>
  */
-public class RsoketJsonFileWatcher extends AbstractWatcher {
+public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
+	/**
+	 * Immutable configuration for {@link RsoketAsyncApiJsonFileWatcher}.
+	 */
 	public static final class Config {
 
 		private final String watchDirectory;
 
-		private final String rsoketOutputFile;
+		private final String asyncApiOutputFile;
 
-		/**
-		 * Immutable configuration for {@link RsoketJsonFileWatcher}.
-		 */
 		private Config(
 						Builder b
 		) {
 
 			this.watchDirectory = b.watchDirectory.replace( '\\', '/' ).replace( '.', '/' );
 
-			int lastDotIndex = b.rsoketOutputFile.lastIndexOf( '.' );
+			int lastDotIndex = b.asyncApiOutputFile.lastIndexOf( '.' );
 
 			if (lastDotIndex == -1) {
-				this.rsoketOutputFile = b.rsoketOutputFile.replace( '\\', '/' ) + ".json";
+				this.asyncApiOutputFile = b.asyncApiOutputFile.replace( '\\', '/' ) + ".json";
 
 			} else {
-				this.rsoketOutputFile = b.rsoketOutputFile.substring( 0, lastDotIndex ).replace( '\\', '/' ).replace( '.', '/' ) + b.rsoketOutputFile.substring( lastDotIndex );
+				this.asyncApiOutputFile = b.asyncApiOutputFile.substring( 0, lastDotIndex ).replace( '\\', '/' ).replace( '.', '/' ) + b.asyncApiOutputFile.substring( lastDotIndex );
 
 			}
 
 		}
 
-		/**
-		 * Returns the normalized source directory to watch.
-		 *
-		 * @return the watch directory
-		 */
 		public String watchDirectory() {
 
 			return watchDirectory;
 
 		}
 
-		/**
-		 * Returns the normalized target path of the generated {@code rsoket.json} file.
-		 *
-		 * @return the output file path
-		 */
-		public String rsoketOutputFile() {
+		public String asyncApiOutputFile() {
 
-			return rsoketOutputFile;
+			return asyncApiOutputFile;
 
 		}
 
@@ -80,13 +72,13 @@ public class RsoketJsonFileWatcher extends AbstractWatcher {
 		}
 
 		/**
-		 * Builder for {@link RsoketJsonFileWatcher.Config}.
+		 * Builder for {@link RsoketAsyncApiJsonFileWatcher.Config}.
 		 */
 		public static final class Builder {
 
 			private String watchDirectory = ProjectDefaults.SRC_MAIN_JAVA;
 
-			private String rsoketOutputFile = "src/main/resources/static/rsoket.json";
+			private String asyncApiOutputFile = "src/main/resources/static/asyncapi-rsocket.json";
 
 			/**
 			 * Sets the source directory to watch and parse.
@@ -106,18 +98,18 @@ public class RsoketJsonFileWatcher extends AbstractWatcher {
 			}
 
 			/**
-			 * Sets the target path of the generated {@code rsoket.json} file.
+			 * Sets the target path of the generated AsyncAPI JSON file.
 			 *
 			 * @param p
 			 *            the output file path
 			 * 
 			 * @return this builder
 			 */
-			public Builder rsoketOutputFile(
+			public Builder asyncApiOutputFile(
 				String p
 			) {
 
-				this.rsoketOutputFile = p;
+				this.asyncApiOutputFile = p;
 				return this;
 
 			}
@@ -140,13 +132,13 @@ public class RsoketJsonFileWatcher extends AbstractWatcher {
 	private final Config config;
 
 	/**
-	 * Creates a new simplified RSocket JSON watcher.
+	 * Creates a new AsyncAPI JSON watcher.
 	 *
 	 * @param config
 	 *            the watcher configuration
 	 */
-	public RsoketJsonFileWatcher(
-									Config config
+	public RsoketAsyncApiJsonFileWatcher(
+											Config config
 	) {
 
 		this.config = config;
@@ -154,16 +146,17 @@ public class RsoketJsonFileWatcher extends AbstractWatcher {
 	}
 
 	/**
-	 * Executes a single RSocket JSON generation pass.
+	 * Executes a single AsyncAPI generation pass.
 	 *
 	 * @return a {@link reactor.core.publisher.Mono} emitting {@code true} if the output file was
 	 *         changed
 	 */
+	@Override
 	public Mono<Boolean> runGenerateTask() {
 
 		return Mono.fromCallable( () -> {
-			String json = generateRsoketJson();
-			Path out = Paths.get( config.rsoketOutputFile() );
+			String json = generateAsyncApiJson();
+			Path out = Paths.get( config.asyncApiOutputFile() );
 			return writeIfChanged( out, json.getBytes( StandardCharsets.UTF_8 ) );
 
 		} ).subscribeOn( Schedulers.boundedElastic() );
@@ -180,6 +173,7 @@ public class RsoketJsonFileWatcher extends AbstractWatcher {
 	/**
 	 * Starts watching the configured source directory.
 	 */
+	@Override
 	public void startWatching() {
 
 		try {
@@ -192,7 +186,7 @@ public class RsoketJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	private String generateRsoketJson() {
+	private String generateAsyncApiJson() {
 
 		try {
 			RsoketParser parser = new RsoketParser();
@@ -204,7 +198,9 @@ public class RsoketJsonFileWatcher extends AbstractWatcher {
 						.thenComparing( RsoketRouteInfo::getController )
 						.thenComparing( RsoketRouteInfo::getMethod )
 				);
-			return RsoketGenerator.generateRsoketJson( routes );
+
+			RsoketAsyncApiGenerator.Options opt = new RsoketAsyncApiGenerator.Options();
+			return RsoketAsyncApiGenerator.generateAsyncApiJson( routes, opt );
 
 		} catch (Exception e) {
 			e.printStackTrace();

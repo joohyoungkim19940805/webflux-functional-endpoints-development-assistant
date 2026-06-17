@@ -15,7 +15,7 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import com.byeolnaerim.watch.db.EntityFileWatcher;
-import com.byeolnaerim.watch.document.asyncapi.rsoket.RsoketAsyncApiJsonFileWatcher;
+import com.byeolnaerim.watch.document.asyncapi.rsocket.RsoketAsyncApiJsonFileWatcher;
 import com.byeolnaerim.watch.document.swagger.SwaggerJsonFileWatcher;
 import com.byeolnaerim.watch.route.HandlerGenerator;
 import reactor.core.Disposable;

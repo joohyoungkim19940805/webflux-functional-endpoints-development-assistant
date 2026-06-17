@@ -1,4 +1,4 @@
-package com.byeolnaerim.watch.document.asyncapi.rsoket;
+package com.byeolnaerim.watch.document.asyncapi.rsocket;
 
 
 import java.util.LinkedHashMap;
