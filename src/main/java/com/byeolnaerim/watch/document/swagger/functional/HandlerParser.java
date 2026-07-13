@@ -88,6 +88,8 @@ public class HandlerParser {
 
 	private Set<String> processedTypes = new HashSet<>();
 
+	private Set<String> processingMethods = new HashSet<>();
+
 	private boolean hasResponseBodyAnnotationOverride = false;
 
 	/**
@@ -107,6 +109,7 @@ public class HandlerParser {
 		queryParamsVars.clear();
 		pathsParamsVars.clear();
 		processedTypes.clear();
+		processingMethods.clear();
 		hasResponseBodyAnnotationOverride = false;
 		HandlerInfo handlerInfo = new HandlerInfo();
 
@@ -266,27 +269,83 @@ public class HandlerParser {
 
 		if (declaringType != null) {
 			// 메서드 이름과 파라미터 타입 등을 통해 CtMethod를 찾는다.
-			List<CtMethod<?>> candidates = declaringType
-				.getMethods()
-				.stream()
-				.filter( m -> {
-					m.getReference().getActualTypeArguments();
-					return m.getSimpleName().equals( executableRef.getSimpleName() );
-
-				} )
-				// 파라미터 타입 매칭 로직 필요. 여기서는 단순히 이름 맞추는 정도로 가정
-				.collect( Collectors.toList() );
+			List<CtMethod<?>> candidates = findCandidateMethods( executableRef, declaringType );
 
 			// 여기서는 매칭되는 첫 번째 메서드를 사용
 			if (! candidates.isEmpty()) {
 				CtMethod<?> method = candidates.get( 0 );
 
-				if (method.getBody() != null) {
-					parseHandlerBody( method.getBody(), handlerInfo, routeName );
+				parseMethodBody( method, handlerInfo, routeName );
+
+			}
+
+		}
+
+	}
+
+	private List<CtMethod<?>> findCandidateMethods(
+		CtExecutableReference<?> executableRef, CtType<?> declaringType
+	) {
+
+		if (executableRef == null || declaringType == null) {
+			return List.of();
+
+		}
+
+		if (executableRef.getDeclaration() instanceof CtMethod<?> method) {
+			return List.of( method );
+
+		}
+
+		return declaringType
+			.getMethods()
+			.stream()
+			.filter( method -> method.getSimpleName().equals( executableRef.getSimpleName() ) )
+			.filter( method -> method.getParameters().size() == executableRef.getParameters().size() )
+			.filter( method -> {
+
+				for (int i = 0; i < method.getParameters().size(); i++) {
+					CtTypeReference<?> declaredType = method.getParameters().get( i ).getType();
+					CtTypeReference<?> invokedType = executableRef.getParameters().get( i );
+
+					if (declaredType != null && invokedType != null && ! declaredType
+						.getTypeErasure()
+						.getQualifiedName()
+						.equals( invokedType.getTypeErasure().getQualifiedName() )) {
+						return false;
+
+					}
 
 				}
 
-			}
+				return true;
+
+			} )
+			.collect( Collectors.toList() );
+
+	}
+
+	private void parseMethodBody(
+		CtMethod<?> method, HandlerInfo handlerInfo, String routeName
+	) {
+
+		if (method == null || method.getBody() == null) {
+			return;
+
+		}
+
+		String methodKey = method.getDeclaringType().getQualifiedName() + "#" + method.getSignature();
+
+		if (! processingMethods.add( methodKey )) {
+			return;
+
+		}
+
+		try {
+			parseHandlerBody( method.getBody(), handlerInfo, routeName );
+
+		} finally {
+			processingMethods.remove( methodKey );
 
 		}
 
@@ -396,11 +455,7 @@ public class HandlerParser {
 				CtType<?> declaringType = resolveDeclaringType( execRef );
 
 				if (declaringType != null) {
-					List<CtMethod<?>> candidateMethods = declaringType
-						.getMethods()
-						.stream()
-						.filter( m -> m.getSimpleName().equals( execRef.getSimpleName() ) )
-						.collect( Collectors.toList() );
+					List<CtMethod<?>> candidateMethods = findCandidateMethods( execRef, declaringType );
 
 					for (CtMethod<?> method : candidateMethods) {
 						boolean hasServerRequestParam = method
@@ -408,8 +463,8 @@ public class HandlerParser {
 							.stream()
 							.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
 
-						if (hasServerRequestParam && method.getBody() != null) {
-							parseHandlerBody( method.getBody(), handlerInfo, routeName );
+						if (hasServerRequestParam) {
+							parseMethodBody( method, handlerInfo, routeName );
 
 						}
 
@@ -441,11 +496,7 @@ public class HandlerParser {
 							if (innerDeclaringType == null)
 								continue;
 
-							List<CtMethod<?>> innerCandidates = innerDeclaringType
-								.getMethods()
-								.stream()
-								.filter( m -> m.getSimpleName().equals( innerExecRef.getSimpleName() ) )
-								.collect( Collectors.toList() );
+							List<CtMethod<?>> innerCandidates = findCandidateMethods( innerExecRef, innerDeclaringType );
 
 							for (CtMethod<?> m : innerCandidates) {
 								boolean hasServerRequestParam = m
@@ -453,8 +504,8 @@ public class HandlerParser {
 									.stream()
 									.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
 
-								if (hasServerRequestParam && m.getBody() != null) {
-									parseHandlerBody( m.getBody(), handlerInfo, routeName );
+								if (hasServerRequestParam) {
+									parseMethodBody( m, handlerInfo, routeName );
 
 								}
 
@@ -481,11 +532,7 @@ public class HandlerParser {
 
 						if (declaringType != null) {
 							// 이름 기준 후보 수집(오버로드 고려 시 시그니처 비교로 보강 가능)
-							List<CtMethod<?>> candidates = declaringType
-								.getMethods()
-								.stream()
-								.filter( m -> m.getSimpleName().equals( ref.getSimpleName() ) )
-								.collect( Collectors.toList() );
+							List<CtMethod<?>> candidates = findCandidateMethods( ref, declaringType );
 
 							for (CtMethod<?> m : candidates) {
 								boolean hasServerRequestParam = m
@@ -493,8 +540,8 @@ public class HandlerParser {
 									.stream()
 									.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
 
-								if (hasServerRequestParam && m.getBody() != null) {
-									parseHandlerBody( m.getBody(), handlerInfo, routeName );
+								if (hasServerRequestParam) {
+									parseMethodBody( m, handlerInfo, routeName );
 
 								}
 
@@ -2470,11 +2517,7 @@ public class HandlerParser {
 			return null;
 
 		var annType = inv.getFactory().Type().createReference( SelectedResponseBody.class );
-		List<CtMethod<?>> candidates = declaringType
-			.getMethods()
-			.stream()
-			.filter( m -> m.getSimpleName().equals( execRef.getSimpleName() ) )
-			.toList();
+		List<CtMethod<?>> candidates = findCandidateMethods( execRef, declaringType );
 
 		for (CtMethod<?> m : candidates) {
 			CtAnnotation<?> ann = m.getAnnotation( annType );
