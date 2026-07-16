@@ -760,8 +760,8 @@ public class HandlerParser {
 		}
 
 		if (isRequestPathVariablesGetOrDefaultCall( inv )) {
-			String key = extractStringArgument( inv, 1 );
-			// String defaultVal = findOrElseDefaultValue( inv );
+			String key = extractStringArgument( inv, 0 );
+//			String defaultVal = extractStringArgument( inv, 1 );
 			addParamInfo( handlerInfo, key, null, inv, LayerPosition.REQUEST_PATH );
 
 		}
