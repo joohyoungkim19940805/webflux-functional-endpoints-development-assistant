@@ -17,6 +17,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.benf.cfr.reader.api.CfrDriver;
@@ -34,6 +35,8 @@ import spoon.reflect.declaration.CtType;
  */
 public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
+	private static final Map<Path, Object> DECOMPILE_LOCKS = new ConcurrentHashMap<>();
+
 	/** Immutable configuration for {@link RsoketAsyncApiJsonFileWatcher}. */
 	public static final class Config {
 
@@ -48,7 +51,7 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 		private final List<Class<?>> decompileJarClasses;
 
 		private Config(
-			Builder b
+						Builder b
 		) {
 
 			this.watchDirectory = b.watchDirectory.replace( '\\', '/' ).replace( '.', '/' );
@@ -210,7 +213,7 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 	private final Config config;
 
 	public RsoketAsyncApiJsonFileWatcher(
-		Config config
+											Config config
 	) {
 
 		this.config = config;
@@ -481,42 +484,56 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 		String jarPath, Set<String> effectiveSourceClasspath
 	) {
 
-		try {
-			Path jar = Paths.get( jarPath ).toAbsolutePath().normalize();
+		Path jar = Paths.get( jarPath ).toAbsolutePath().normalize();
 
-			if (! Files.isRegularFile( jar ) || ! jar.getFileName().toString().toLowerCase().endsWith( ".jar" )) {
-				throw new IllegalArgumentException( "Not a jar file: " + jar );
+		if (! Files.isRegularFile( jar ) || ! jar.getFileName().toString().toLowerCase().endsWith( ".jar" )) {
+			throw new IllegalArgumentException( "Not a jar file: " + jar );
+
+		}
+
+		String fileName = jar.getFileName().toString();
+		String baseName = stripExtension( fileName );
+		String hash = Integer.toHexString( jar.toString().hashCode() );
+		String dirName = (baseName + "-" + hash).replaceAll( "[^a-zA-Z0-9._-]", "_" );
+		Path outputDir = Paths.get( "build", "spoon-decompiled", dirName ).toAbsolutePath().normalize();
+		Path completeMarker = outputDir.resolve( ".decompile-complete" );
+		Object lock = DECOMPILE_LOCKS.computeIfAbsent( outputDir, ignored -> new Object() );
+
+		synchronized (lock) {
+
+			try {
+				String expectedMarker = Files.size( jar ) + "\n" + Files.getLastModifiedTime( jar ).toMillis();
+
+				if (Files.isRegularFile( completeMarker ) && expectedMarker.equals( Files.readString( completeMarker, StandardCharsets.UTF_8 ) )) {
+					return outputDir;
+
+				}
+
+				recreateDirectory( outputDir );
+
+				Map<String, String> options = new HashMap<>();
+				options.put( "outputdir", outputDir.toString() );
+
+				if (! effectiveSourceClasspath.isEmpty()) {
+					options.put( "extraclasspath", String.join( File.pathSeparator, effectiveSourceClasspath ) );
+
+				}
+
+				new CfrDriver.Builder()
+					.withOptions( options )
+					.build()
+					.analyse( List.of( jar.toString() ) );
+
+				Files.writeString( completeMarker, expectedMarker, StandardCharsets.UTF_8 );
+				return outputDir;
+
+			} catch (IOException e) {
+				throw new RuntimeException( "Failed to prepare decompile output directory for jar: " + jarPath, e );
+
+			} catch (Exception e) {
+				throw new RuntimeException( "Failed to decompile jar: " + jarPath, e );
 
 			}
-
-			String fileName = jar.getFileName().toString();
-			String baseName = stripExtension( fileName );
-			String hash = Integer.toHexString( jar.toString().hashCode() );
-			String dirName = (baseName + "-" + hash).replaceAll( "[^a-zA-Z0-9._-]", "_" );
-			Path outputDir = Paths.get( "build", "spoon-decompiled", dirName );
-
-			recreateDirectory( outputDir );
-
-			Map<String, String> options = new HashMap<>();
-			options.put( "outputdir", outputDir.toString() );
-
-			if (! effectiveSourceClasspath.isEmpty()) {
-				options.put( "extraclasspath", String.join( File.pathSeparator, effectiveSourceClasspath ) );
-
-			}
-
-			new CfrDriver.Builder()
-				.withOptions( options )
-				.build()
-				.analyse( List.of( jar.toString() ) );
-
-			return outputDir;
-
-		} catch (IOException e) {
-			throw new RuntimeException( "Failed to prepare decompile output directory for jar: " + jarPath, e );
-
-		} catch (Exception e) {
-			throw new RuntimeException( "Failed to decompile jar: " + jarPath, e );
 
 		}
 
