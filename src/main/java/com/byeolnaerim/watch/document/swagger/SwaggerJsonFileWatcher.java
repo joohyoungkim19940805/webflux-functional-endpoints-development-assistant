@@ -19,10 +19,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiPredicate;
 import java.util.stream.Stream;
-import org.benf.cfr.reader.api.CfrDriver;
 import com.byeolnaerim.watch.AbstractWatcher;
 import com.byeolnaerim.watch.ProjectDefaults;
 import com.byeolnaerim.watch.RouteUtil;
+import com.byeolnaerim.watch.document.JarSourceDecompiler;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerParser;
 import com.byeolnaerim.watch.document.swagger.functional.RouteInfo;
 import com.byeolnaerim.watch.document.swagger.functional.RouteParser;
@@ -776,78 +776,13 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 		String jarPath, Set<String> effectiveSourceClasspath
 	) {
 
-		try {
-			Path jar = Paths.get( jarPath ).toAbsolutePath().normalize();
-
-			if (! Files.exists( jar )) { throw new IllegalArgumentException( "Decompile jar not found: " + jar ); }
-
-			String fileName = jar.getFileName().toString();
-			String baseName = stripExtension( fileName );
-			String hash = Integer.toHexString( jar.toString().hashCode() );
-			String dirName = (baseName + "-" + hash).replaceAll( "[^a-zA-Z0-9._-]", "_" );
-
-			Path outputDir = Paths.get( "build", "spoon-decompiled", dirName );
-
-			recreateDirectory( outputDir );
-
-			Map<String, String> options = new HashMap<>();
-			options.put( "outputdir", outputDir.toString() );
-
-			if (effectiveSourceClasspath != null && ! effectiveSourceClasspath.isEmpty()) {
-				options.put( "extraclasspath", String.join( File.pathSeparator, effectiveSourceClasspath ) );
-
-			}
-
-			CfrDriver driver = new CfrDriver.Builder()
-				.withOptions( options )
-				.build();
-
-			driver.analyse( List.of( jar.toString() ) );
-
-			return outputDir;
-
-		} catch (IOException e) {
-			throw new RuntimeException( "Failed to prepare decompile output directory for jar: " + jarPath, e );
-
-		} catch (Exception e) {
-			throw new RuntimeException( "Failed to decompile jar: " + jarPath, e );
-
-		}
+		return JarSourceDecompiler.decompile( jarPath, effectiveSourceClasspath );
 
 	}
 
-	private void recreateDirectory(
-		Path dir
-	)
-		throws IOException {
 
-		if (Files.exists( dir )) {
-			List<Path> paths;
 
-			try (Stream<Path> walk = Files.walk( dir )) {
-				paths = walk.sorted( Comparator.reverseOrder() ).toList();
 
-			}
-
-			for (Path path : paths) {
-				Files.deleteIfExists( path );
-
-			}
-
-		}
-
-		Files.createDirectories( dir );
-
-	}
-
-	private String stripExtension(
-		String fileName
-	) {
-
-		int idx = fileName.lastIndexOf( '.' );
-		return idx >= 0 ? fileName.substring( 0, idx ) : fileName;
-
-	}
 	// public static void main(
 	// String[] args
 	// ) {
