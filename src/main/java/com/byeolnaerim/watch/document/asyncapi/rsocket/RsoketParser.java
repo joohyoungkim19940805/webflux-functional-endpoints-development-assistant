@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import com.byeolnaerim.watch.RouteUtil;
-import com.byeolnaerim.watch.document.anntation.SelectedResponseBody;
+import com.byeolnaerim.watch.document.annotation.SelectedResponseBody;
 import com.byeolnaerim.watch.document.common.RsoketTypeInfoParser;
 import com.byeolnaerim.watch.document.common.TypeInfoParser;
 import spoon.Launcher;
@@ -47,7 +47,7 @@ import spoon.reflect.visitor.filter.TypeFilter;
  * whose return type is {@code Mono} or {@code Flux}, extracts destination mappings,
  * request payload metadata, destination-variable metadata, and response-body metadata.</p>
  * <p>Response parsing gives priority to
- * {@link com.byeolnaerim.watch.document.anntation.SelectedResponseBody}
+ * {@link com.byeolnaerim.watch.document.annotation.SelectedResponseBody}
  * when present.</p>
  */
 public class RsoketParser {

@@ -1,4 +1,4 @@
-package com.byeolnaerim.watch.document.anntation;
+package com.byeolnaerim.watch.document.annotation;
 
 
 import java.lang.annotation.ElementType;
