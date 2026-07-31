@@ -10,17 +10,24 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import com.byeolnaerim.watch.db.EntityFileWatcher;
+import com.byeolnaerim.watch.document.AbstractSpoonDocumentWatcher;
+import com.byeolnaerim.watch.document.SpoonAnalysisCache;
 import com.byeolnaerim.watch.document.asyncapi.rsocket.RsoketAsyncApiJsonFileWatcher;
 import com.byeolnaerim.watch.document.swagger.SwaggerJsonFileWatcher;
 import com.byeolnaerim.watch.route.HandlerGenerator;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 
 /**
@@ -63,6 +70,12 @@ public final class WatchForMainRun {
 
 		private final long debounceMillis;
 
+		private final long restartDebounceMillis;
+
+		private final int restartLoopLimit;
+
+		private final long restartLoopWindowMillis;
+
 		private final WatcherFactory<EntityFileWatcher> entityFactory;
 
 		private final WatcherFactory<HandlerGenerator> handlerFactory;
@@ -79,14 +92,21 @@ public final class WatchForMainRun {
 
 			this.trigger = b.trigger;
 			this.debounceMillis = b.debounceMillis;
+			this.restartDebounceMillis = b.restartDebounceMillis;
+			this.restartLoopLimit = b.restartLoopLimit;
+			this.restartLoopWindowMillis = b.restartLoopWindowMillis;
 			this.entityFactory = b.entityFactory;
 			this.handlerFactory = b.handlerFactory;
 			this.swaggerFactory = b.swaggerFactory;
 			this.asyncApiFactory = b.asyncApiFactory;
 			this.classpathWatchRoots = List.copyOf( b.classpathWatchRoots );
 
-			// 필수 보장
-			if (entityFactory == null || handlerFactory == null || swaggerFactory == null) { throw new IllegalStateException( "entityFactory/handlerFactory/swaggerFactory must be provided." ); }
+			if (entityFactory == null && handlerFactory == null && swaggerFactory == null && asyncApiFactory == null) {
+				throw new IllegalStateException(
+					"At least one watcher factory must be provided."
+				);
+
+			}
 
 		}
 
@@ -112,6 +132,12 @@ public final class WatchForMainRun {
 
 			private long debounceMillis = 400;
 
+			private long restartDebounceMillis = 1_500;
+
+			private int restartLoopLimit = 4;
+
+			private long restartLoopWindowMillis = 30_000;
+
 			private WatcherFactory<EntityFileWatcher> entityFactory;
 
 			private WatcherFactory<HandlerGenerator> handlerFactory;
@@ -123,7 +149,7 @@ public final class WatchForMainRun {
 			private final List<Path> classpathWatchRoots = new ArrayList<>();
 
 			/**
-			 * Sets the reload-trigger file path.
+			 * Sets the reload-trigger file path and explicitly enables library-managed restart signaling.
 			 *
 			 * @param p
 			 *            the trigger file path
@@ -152,6 +178,43 @@ public final class WatchForMainRun {
 			) {
 
 				this.debounceMillis = ms;
+				return this;
+
+			}
+
+			/**
+			 * Sets the quiet period used before touching an explicitly configured restart trigger.
+			 *
+			 * @param ms
+			 *            quiet period in milliseconds
+			 *
+			 * @return this builder
+			 */
+			public Builder restartDebounceMillis(
+				long ms
+			) {
+
+				this.restartDebounceMillis = Math.max( 100L, ms );
+				return this;
+
+			}
+
+			/**
+			 * Configures the persistent restart-loop circuit breaker.
+			 *
+			 * @param maxRestarts
+			 *            maximum trigger touches allowed inside the window
+			 * @param windowMillis
+			 *            rolling time window in milliseconds
+			 *
+			 * @return this builder
+			 */
+			public Builder restartLoopGuard(
+				int maxRestarts, long windowMillis
+			) {
+
+				this.restartLoopLimit = Math.max( 1, maxRestarts );
+				this.restartLoopWindowMillis = Math.max( 1_000L, windowMillis );
 				return this;
 
 			}
@@ -307,8 +370,8 @@ public final class WatchForMainRun {
 
 			/**
 			 * Builds an immutable {@link Config} instance.
-			 * <p>If no explicit trigger or classpath watch roots are provided,
-			 * sensible defaults are inferred from the current project and classpath.</p>
+			 * <p>Classpath roots are inferred when omitted. Automatic restart remains disabled
+			 * unless an explicit trigger path is configured.</p>
 			 *
 			 * @return the built configuration
 			 */
@@ -316,9 +379,6 @@ public final class WatchForMainRun {
 
 				if (trigger != null) {
 					trigger = trigger.toAbsolutePath().normalize();
-
-				} else {
-					trigger = ProjectDefaults.detectClasspathRoot( ProjectDefaults.detectProjectRoot() ).normalize().resolve( ".reloadtrigger" ).normalize();
 
 				}
 
@@ -337,7 +397,14 @@ public final class WatchForMainRun {
 
 				}
 
-				classpathWatchRoots.add( trigger.getParent() );
+				if (trigger != null && trigger.getParent() != null) {
+					classpathWatchRoots.add( trigger.getParent() );
+
+				}
+
+				List<Path> distinctRoots = new ArrayList<>( new LinkedHashSet<>( classpathWatchRoots ) );
+				classpathWatchRoots.clear();
+				classpathWatchRoots.addAll( distinctRoots );
 
 				return new Config( this );
 
@@ -370,6 +437,12 @@ public final class WatchForMainRun {
 
 	private final List<AbstractWatcher> watchers = new ArrayList<>();
 
+	private final SpoonAnalysisCache spoonAnalysisCache = new SpoonAnalysisCache();
+
+	private final AtomicBoolean sourceRestartPending = new AtomicBoolean( false );
+
+	private RestartLoopGuard restartLoopGuard;
+
 	/**
 	 * Creates a new orchestrator with the given configuration.
 	 *
@@ -396,41 +469,90 @@ public final class WatchForMainRun {
 
 		watchers.clear();
 
-		// lazy 생성
 		if (entity == null && config.entityFactory != null) {
 			entity = config.entityFactory.create();
+
+		}
+
+		if (entity != null) {
 			watchers.add( entity );
 
 		}
 
 		if (handler == null && config.handlerFactory != null) {
 			handler = config.handlerFactory.create();
+
+		}
+
+		if (handler != null) {
 			watchers.add( handler );
 
 		}
 
 		if (swagger == null && config.swaggerFactory != null) {
 			swagger = config.swaggerFactory.create();
+
+		}
+
+		if (swagger != null) {
 			watchers.add( swagger );
 
 		}
 
 		if (asyncApiFactory == null && config.asyncApiFactory != null) {
 			asyncApiFactory = config.asyncApiFactory.create();
+
+		}
+
+		if (asyncApiFactory != null) {
 			watchers.add( asyncApiFactory );
 
 		}
 
+		watchers
+			.stream()
+			.filter( AbstractSpoonDocumentWatcher.class::isInstance )
+			.map( AbstractSpoonDocumentWatcher.class::cast )
+			.forEach( watcher -> watcher.useSpoonAnalysisCache( spoonAnalysisCache ) );
+
 		running = true;
 
-		// 초기 실행
-		runPipeline( watchers ).blockOptional();
+		if (config.trigger != null) {
+			restartLoopGuard = new RestartLoopGuard(
+				ProjectDefaults.detectProjectRoot().resolve( "build/webflux-fe-dev/restart-history" ),
+				config.restartLoopLimit,
+				config.restartLoopWindowMillis
+			);
+
+		}
+
+		Queue<FileChange> pendingSourceChanges = new ConcurrentLinkedQueue<>();
+
+		Flux<List<FileChange>> sourceChanges = Flux
+			.merge( watchers.stream().map( AbstractWatcher::events ).toList() )
+			.doOnNext( pendingSourceChanges::add )
+			.sampleTimeout( fc -> Mono.delay( Duration.ofMillis( config.debounceMillis ) ) )
+			.map( ignored -> drainChanges( pendingSourceChanges ) )
+			.filter( changes -> ! changes.isEmpty() )
+			.doOnNext( changes -> {
+				if (config.trigger != null && changes.stream().anyMatch( this::requiresSourceRestart )) {
+					sourceRestartPending.set( true );
+
+				}
+
+			} );
 
 		this.subscription = Flux
-			.merge( watchers.stream().map( e -> e.events() ).toList() )
-			.sampleTimeout( fc -> Mono.delay( Duration.ofMillis( config.debounceMillis ) ) )
-			.onBackpressureLatest()
-			.concatMap( ignored -> runPipeline( watchers ) )
+			.merge( Mono.just( List.<FileChange>of() ), sourceChanges )
+			.concatMap(
+				changes -> runPipeline( watchers, changes )
+					.subscribeOn( Schedulers.boundedElastic() )
+					.onErrorResume( error -> {
+						error.printStackTrace();
+						return Mono.just( false );
+
+					} )
+			)
 			.subscribe();
 
 		if (! config.classpathWatchRoots.isEmpty()) {
@@ -440,21 +562,30 @@ public final class WatchForMainRun {
 
 			}
 
+			Queue<FileChange> pendingClasspathChanges = new ConcurrentLinkedQueue<>();
+
 			this.classpathSubscription = Flux
 				.merge( classpathWatchers.stream().map( ClasspathWatcher::events ).toList() )
-				.sampleTimeout( fc -> Mono.delay( Duration.ofMillis( config.debounceMillis ) ) )
+				.doOnNext( pendingClasspathChanges::add )
+				.sampleTimeout( fc -> Mono.delay( Duration.ofMillis( config.restartDebounceMillis ) ) )
+				.map( ignored -> drainChanges( pendingClasspathChanges ) )
+				.filter( changes -> ! changes.isEmpty() )
 				.onBackpressureLatest()
-				.doOnNext( fc -> {
-					if (running)
+				.doOnNext( changes -> {
+					changes.forEach( spoonAnalysisCache::invalidateClasspath );
+
+					if (running && config.trigger != null && shouldTouchTrigger( changes )) {
 						touchTrigger();
 
-				} ) // ✅ Mono 안 만들고 실제 touch 실행
+					}
+
+				} )
 				.subscribe();
 
 			for (ClasspathWatcher w : classpathWatchers) {
 
 				try {
-					w.startWatching(); // subscribe 이후 start
+					w.startWatching();
 
 				} catch (Exception ignore) {
 
@@ -464,10 +595,7 @@ public final class WatchForMainRun {
 
 		}
 
-		// watch 시작
-		watchers.forEach( e -> e.startWatching() );
-
-		// Thread.currentThread().join();
+		watchers.forEach( AbstractWatcher::startWatching );
 
 	}
 
@@ -510,18 +638,137 @@ public final class WatchForMainRun {
 	}
 
 	private Mono<Boolean> runPipeline(
-		Collection<AbstractWatcher> watchers
+		Collection<AbstractWatcher> watchers,
+		Collection<FileChange> changes
 	) {
 
-		return Flux
-			.fromIterable( watchers )
+		List<AbstractWatcher> sourceGenerators = watchers
+			.stream()
 			.filter( Objects::nonNull )
-			.flatMap( AbstractWatcher::runGenerateTask )
-			.reduce( false, (acc, v) -> acc || Boolean.TRUE.equals( v ) );
+			.filter( watcher -> ! (watcher instanceof AbstractSpoonDocumentWatcher) )
+			.toList();
+
+		List<AbstractWatcher> documentGenerators = watchers
+			.stream()
+			.filter( Objects::nonNull )
+			.filter( AbstractSpoonDocumentWatcher.class::isInstance )
+			.toList();
+
+		Mono<Boolean> sourceResult = Flux
+			.fromIterable( sourceGenerators )
+			.concatMap( AbstractWatcher::runGenerateTask )
+			.reduce( false, (acc, changed) -> acc || Boolean.TRUE.equals( changed ) );
+
+		return sourceResult
+			.flatMap( sourceChanged -> Mono.defer( () -> {
+				if (Boolean.TRUE.equals( sourceChanged )) {
+					spoonAnalysisCache.invalidateProjectModels();
+
+					if (config.trigger != null) {
+						sourceRestartPending.set( true );
+
+					}
+
+				} else {
+					spoonAnalysisCache.invalidateProjectModels( changes );
+
+				}
+
+				return Flux
+					.fromIterable( documentGenerators )
+					.flatMap( AbstractWatcher::runGenerateTask )
+					.reduce( false, (acc, changed) -> acc || Boolean.TRUE.equals( changed ) )
+					.map( documentChanged -> sourceChanged || documentChanged );
+
+			} ) );
+
+	}
+
+	private List<FileChange> drainChanges(
+		Queue<FileChange> pendingChanges
+	) {
+
+		List<FileChange> changes = new ArrayList<>();
+		FileChange change;
+
+		while ((change = pendingChanges.poll()) != null) {
+			changes.add( change );
+
+		}
+
+		return List.copyOf( changes );
+
+	}
+
+	private boolean requiresSourceRestart(
+		FileChange change
+	) {
+
+		return change != null && (change.isJavaSource() || change.isStructuralSourceChange());
+
+	}
+
+	private boolean shouldTouchTrigger(
+		Collection<FileChange> changes
+	) {
+
+		Path currentClasspathRoot = config.trigger.getParent() == null
+			? null
+			: config.trigger.getParent().toAbsolutePath().normalize();
+
+		boolean currentProjectClassChanged = false;
+		boolean externalRuntimeChanged = false;
+
+		for (FileChange change : changes) {
+			if (change == null || change.path() == null)
+				continue;
+
+			Path changedPath = change.path().toAbsolutePath().normalize();
+			String value = changedPath.toString().replace( '\\', '/' ).toLowerCase();
+
+			if (value.endsWith( ".class" )) {
+				if (currentClasspathRoot != null && changedPath.startsWith( currentClasspathRoot )) {
+					currentProjectClassChanged = true;
+
+				} else {
+					externalRuntimeChanged = true;
+
+				}
+
+			} else if (
+				value.endsWith( ".jar" )
+					|| value.endsWith( ".properties" )
+					|| value.endsWith( ".yml" )
+					|| value.endsWith( ".yaml" )
+					|| change.isOverflow()
+			) {
+				externalRuntimeChanged = true;
+
+			}
+
+		}
+
+		boolean sourceRequested = currentProjectClassChanged && sourceRestartPending.get();
+		boolean shouldTouch = sourceRequested || externalRuntimeChanged;
+
+		if (shouldTouch) {
+			sourceRestartPending.set( false );
+
+		}
+
+		return shouldTouch;
 
 	}
 
 	private void touchTrigger() {
+
+		if (restartLoopGuard != null && ! restartLoopGuard.tryAcquire()) {
+			System.err.println(
+				"[webflux-fe-dev] Automatic restart was blocked because repeated trigger touches were detected."
+			);
+			return;
+
+		}
 
 		try {
 			Path trigger = config.trigger;
@@ -531,16 +778,14 @@ public final class WatchForMainRun {
 
 			}
 
-			if (! Files.exists( trigger )) {
-				Files.createFile( trigger );
-
-			}
-
-			Files
-				.setLastModifiedTime(
-					trigger,
-					java.nio.file.attribute.FileTime.fromMillis( System.currentTimeMillis() )
-				);
+			Files.writeString(
+				trigger,
+				Long.toString( System.currentTimeMillis() ),
+				java.nio.charset.StandardCharsets.UTF_8,
+				java.nio.file.StandardOpenOption.CREATE,
+				java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
+				java.nio.file.StandardOpenOption.WRITE
+			);
 			System.out.println( "  - touched " + trigger );
 
 		} catch (IOException ex) {
@@ -549,6 +794,7 @@ public final class WatchForMainRun {
 		}
 
 	}
+
 
 }
 

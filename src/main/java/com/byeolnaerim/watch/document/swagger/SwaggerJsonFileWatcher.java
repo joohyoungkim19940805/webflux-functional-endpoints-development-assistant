@@ -1,35 +1,26 @@
 package com.byeolnaerim.watch.document.swagger;
 
 
-import java.io.File;
 import java.io.IOException;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.CodeSource;
-import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.BiPredicate;
-import java.util.stream.Stream;
-import com.byeolnaerim.watch.AbstractWatcher;
 import com.byeolnaerim.watch.ProjectDefaults;
 import com.byeolnaerim.watch.RouteUtil;
-import com.byeolnaerim.watch.document.JarSourceDecompiler;
+import com.byeolnaerim.watch.document.AbstractSpoonDocumentWatcher;
+import com.byeolnaerim.watch.document.SpoonAnalysisContext;
+import com.byeolnaerim.watch.document.SpoonAnalysisRequest;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerParser;
 import com.byeolnaerim.watch.document.swagger.functional.RouteInfo;
 import com.byeolnaerim.watch.document.swagger.functional.RouteParser;
 import com.byeolnaerim.watch.document.swagger.mvc.MvcParser;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
-import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtInvocation;
 import spoon.reflect.declaration.CtMethod;
@@ -48,7 +39,7 @@ import spoon.reflect.visitor.filter.TypeFilter;
  * @throws Exception
  *             if JSON generation fails
  */
-public class SwaggerJsonFileWatcher extends AbstractWatcher {
+public class SwaggerJsonFileWatcher extends AbstractSpoonDocumentWatcher {
 
 	/**
 	 * Supported source parsing modes for Swagger generation.
@@ -393,11 +384,7 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	/**
-	 * Executes a single Swagger generation pass and writes the output file only when changed.
-	 *
-	 * @return a {@link Mono} emitting {@code true} if the Swagger file was updated
-	 */
+
 	@Override
 	public Mono<Boolean> runGenerateTask() {
 
@@ -405,10 +392,9 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 			try {
 
-				// 1) 기존 generate 로직으로 JSON 문자열 구성
-				String json = generateSwaggerJson(); // <- 기존 함수 그대로
-				// 2) 실제 파일에 "변경 시에만" 기록
-				Path out = Paths.get( config.swaggerOutputFile );
+
+				String json = generateSwaggerJson();
+				Path out = Paths.get( config.swaggerOutputFile() );
 				return writeIfChanged( out, json.getBytes( StandardCharsets.UTF_8 ) );
 
 			} catch (Exception e) {
@@ -421,7 +407,6 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	/** 감시 루트 제공 */
 	@Override
 	protected Path root() {
 
@@ -429,9 +414,6 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	/**
-	 * Starts watching the configured source directory.
-	 */
 	@Override
 	public void startWatching() {
 
@@ -445,15 +427,19 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 	}
 
-	/**
-	 * Swagger JSON 생성
-	 * 
-	 * @throws Exception
-	 */
 	private String generateSwaggerJson() throws Exception {
 
+		SpoonAnalysisContext analysis = analyzeSpoon(
+				SpoonAnalysisRequest
+					.of(
+						config.watchDirectory(),
+						config.sourceClasspath(),
+						config.decompileJarPaths(),
+						config.decompileJarClasses()
+					)
+			);
 
-		List<RouteInfo> routeInfos = extractRouteInfos(); // RouteInfo 리스트 추출
+		List<RouteInfo> routeInfos = extractRouteInfos( analysis );
 		routeInfos
 			.sort(
 				Comparator
@@ -461,179 +447,34 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 					.thenComparing( RouteInfo::getHttpMethod )
 			);
 
-		String swaggerJson = SwaggerGenerator.generateSwaggerJson( routeInfos, config.customTypeMapper() ); // Swagger JSON 생성 // Swagger JSON 생성
-		return swaggerJson;
-
-		// try (FileWriter writer = new FileWriter( config.swaggerOutputFile )) {
-		// writer.write( swaggerJson );
-		// System.out.println( "Swagger JSON file updated: " + config.swaggerOutputFile );
-		// return swaggerJson;
-		//
-		// }
-
-
-	}
-
-	private Set<String> buildEffectiveSourceClasspath() {
-
-		Set<String> effectiveSourceClasspath = new LinkedHashSet<>();
-
-		// 현재 실행 중인 앱의 runtime classpath 전체
-		effectiveSourceClasspath.addAll( collectRuntimeClasspathEntries() );
-
-		// 2) 사용자가 직접 추가한 classpath
-		if (config.sourceClasspath() != null && ! config.sourceClasspath().isEmpty()) {
-			effectiveSourceClasspath
-				.addAll(
-					config
-						.sourceClasspath()
-						.stream()
-						.map( p -> Paths.get( p ).toAbsolutePath().normalize().toString() )
-						.toList()
-				);
-
-		}
-
-		// marker class가 로드된 실제 jar/classes 위치
-		if (config.decompileJarClasses() != null && ! config.decompileJarClasses().isEmpty()) {
-
-			for (Class<?> markerClass : config.decompileJarClasses()) {
-				Path location = resolveClassLocation( markerClass );
-				effectiveSourceClasspath.add( location.toString() );
-
-			}
-
-		}
-
-		// path로 직접 추가한 jar
-		if (config.decompileJarPaths() != null && ! config.decompileJarPaths().isEmpty()) {
-			effectiveSourceClasspath
-				.addAll(
-					config
-						.decompileJarPaths()
-						.stream()
-						.map( p -> Paths.get( p ).toAbsolutePath().normalize().toString() )
-						.toList()
-				);
-
-		}
-
-		return effectiveSourceClasspath
-			.stream()
-			.filter( this::isValidClasspathEntry )
-			.collect( java.util.stream.Collectors.toCollection( LinkedHashSet::new ) );
-
-	}
-
-	private List<String> collectRuntimeClasspathEntries() {
-
-		String rawClasspath = System.getProperty( "java.class.path", "" );
-
-		if (rawClasspath == null || rawClasspath.isBlank()) {
-			return List.of();
-
-		}
-
-		String[] entries = rawClasspath.split( java.util.regex.Pattern.quote( File.pathSeparator ) );
-		List<String> result = new ArrayList<>();
-
-		for (String entry : entries) {
-			if (entry == null || entry.isBlank())
-				continue;
-
-			Path path = Paths.get( entry ).toAbsolutePath().normalize();
-
-			if (Files.exists( path )) {
-				result.add( path.toString() );
-
-			}
-
-		}
-
-		return result;
-
-	}
-
-	private boolean isValidClasspathEntry(
-		String entry
-	) {
-
-		try {
-			Path path = Paths.get( entry ).toAbsolutePath().normalize();
-
-			if (! Files.exists( path )) {
-				return false;
-
-			}
-
-			if (Files.isRegularFile( path )) {
-				String name = path.getFileName().toString().toLowerCase();
-				return name.endsWith( ".jar" );
-
-			}
-
-			if (Files.isDirectory( path )) {
-				return containsClassFile( path );
-
-			}
-
-			return false;
-
-		} catch (Exception e) {
-			return false;
-
-		}
-
-	}
-
-	private boolean containsClassFile(
-		Path dir
-	) {
-
-		try (Stream<Path> walk = Files.walk( dir )) {
-			return walk.anyMatch( p -> Files.isRegularFile( p ) && p.getFileName().toString().endsWith( ".class" ) );
-
-		} catch (IOException e) {
-			return false;
-
-		}
+		return SwaggerGenerator.generateSwaggerJson( routeInfos, config.customTypeMapper() );
 
 	}
 
 	/** Spoon 기반으로 RouterFunction에서 라우트 정보 추출 */
-	private List<RouteInfo> extractRouteInfos() {
+	private List<RouteInfo> extractRouteInfos(
+		SpoonAnalysisContext analysis
+	) {
 
-		Launcher launcher = new Launcher();
-		launcher.addInputResource( config.watchDirectory() );
-		launcher.getEnvironment().setAutoImports( true );
-		launcher.getEnvironment().setNoClasspath( true );
+		CtModel model = analysis.projectModel();
+		Map<String, CtType<?>> externalTypes = analysis.externalTypes();
 
-		Set<String> effectiveSourceClasspath = buildEffectiveSourceClasspath();
-
-		if (! effectiveSourceClasspath.isEmpty()) {
-			launcher
-				.getEnvironment()
-				.setSourceClasspath(
-					effectiveSourceClasspath.toArray( String[]::new )
-				);
+		if (config.projectMode() == ProjectMode.MVC) {
+			return MvcParser.parseRoutes( model, externalTypes );
 
 		}
 
-		launcher.buildModel();
-
-		CtModel model = launcher.getModel();
-
-		Map<String, CtType<?>> externalTypes = buildExternalTypeRegistry( effectiveSourceClasspath );
-
-		// MVC 모드면 annotated 기반 파서로
-		if (config.projectMode() == ProjectMode.MVC) { return MvcParser.parseRoutes( model, externalTypes ); }
-
 		List<CtMethod<?>> routerMethods = model
 			.getElements(
-				(CtMethod<?> m) -> m.getAnnotations().stream().anyMatch( a -> a.getAnnotationType().getSimpleName().equals( "Bean" ) ) && m.getType().getSimpleName().contains( "RouterFunction" )
+				(CtMethod<?> m) -> m
+					.getAnnotations()
+					.stream()
+					.anyMatch( a -> a.getAnnotationType().getSimpleName().equals( "Bean" ) )
+					&& m.getType().getSimpleName().contains( "RouterFunction" )
 			);
 
 		List<RouteInfo> routeInfos = new ArrayList<>();
+		HandlerParser handlerParser = new HandlerParser( externalTypes );
 
 		for (CtMethod<?> routerMethod : routerMethods) {
 			@SuppressWarnings("rawtypes")
@@ -645,7 +486,6 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 
 			for (CtInvocation<?> httpCall : httpCalls) {
 				RouteInfo routeInfo = RouteParser.extractRouteInfoFromHttpCall( httpCall, routerMethod.getSimpleName() );
-				HandlerParser handlerParser = new HandlerParser( externalTypes );
 				routeInfo
 					.setHandlerInfo(
 						handlerParser
@@ -663,139 +503,5 @@ public class SwaggerJsonFileWatcher extends AbstractWatcher {
 		return routeInfos;
 
 	}
-
-	private Map<String, CtType<?>> buildExternalTypeRegistry(
-		Set<String> effectiveSourceClasspath
-	) {
-
-		Map<String, CtType<?>> result = new HashMap<>();
-
-		if (config.decompileJarPaths() != null && ! config.decompileJarPaths().isEmpty()) {
-
-			for (String jarPath : config.decompileJarPaths()) {
-				Path decompiledSourceDir = decompileJarToSourceDir( jarPath, effectiveSourceClasspath );
-				loadExternalTypesFromSourceDir( result, decompiledSourceDir, effectiveSourceClasspath );
-
-			}
-
-		}
-
-		if (config.decompileJarClasses() != null && ! config.decompileJarClasses().isEmpty()) {
-
-			for (Class<?> markerClass : config.decompileJarClasses()) {
-				Path location = resolveClassLocation( markerClass );
-
-				if (Files.isRegularFile( location ) && location.getFileName().toString().toLowerCase().endsWith( ".jar" )) {
-					Path decompiledSourceDir = decompileJarToSourceDir( location.toString(), effectiveSourceClasspath );
-					loadExternalTypesFromSourceDir( result, decompiledSourceDir, effectiveSourceClasspath );
-
-				}
-
-			}
-
-		}
-
-		return result;
-
-	}
-
-	private void loadExternalTypesFromSourceDir(
-		Map<String, CtType<?>> result, Path sourceDir, Set<String> effectiveSourceClasspath
-	) {
-
-		Launcher externalLauncher = new Launcher();
-		externalLauncher.addInputResource( sourceDir.toString() );
-		externalLauncher.getEnvironment().setAutoImports( true );
-		externalLauncher.getEnvironment().setNoClasspath( true );
-
-		if (effectiveSourceClasspath != null && ! effectiveSourceClasspath.isEmpty()) {
-			externalLauncher
-				.getEnvironment()
-				.setSourceClasspath(
-					effectiveSourceClasspath.toArray( String[]::new )
-				);
-
-		}
-
-		externalLauncher.buildModel();
-
-		for (CtType<?> type : externalLauncher.getModel().getAllTypes()) {
-			result.put( type.getQualifiedName(), type );
-
-		}
-
-	}
-
-	private Path resolveClassLocation(
-		Class<?> markerClass
-	) {
-
-		if (markerClass == null) {
-			throw new IllegalArgumentException( "markerClass must not be null" );
-
-		}
-
-		ProtectionDomain protectionDomain = markerClass.getProtectionDomain();
-
-		if (protectionDomain == null) {
-			throw new IllegalStateException( "ProtectionDomain is null for class: " + markerClass.getName() );
-
-		}
-
-		CodeSource codeSource = protectionDomain.getCodeSource();
-
-		if (codeSource == null || codeSource.getLocation() == null) {
-			throw new IllegalStateException(
-				"CodeSource location is null for class: " + markerClass
-					.getName() + ". If this runs from a packaged Spring Boot fat jar, pass addDecompileJar(\"/real/path/to/dependency.jar\") instead."
-			);
-
-		}
-
-		try {
-			URI uri = codeSource.getLocation().toURI();
-
-			if (uri.getScheme() != null && ! "file".equalsIgnoreCase( uri.getScheme() )) {
-				throw new IllegalStateException(
-					"Unsupported marker class location URI scheme: " + uri + " for class: " + markerClass
-						.getName() + ". If this runs from a packaged Spring Boot fat jar, pass addDecompileJar(\"/real/path/to/dependency.jar\") instead."
-				);
-
-			}
-
-			return Paths.get( uri ).toAbsolutePath().normalize();
-
-		} catch (Exception e) {
-			throw new RuntimeException( "Failed to resolve class location for: " + markerClass.getName(), e );
-
-		}
-
-	}
-
-	private Path decompileJarToSourceDir(
-		String jarPath, Set<String> effectiveSourceClasspath
-	) {
-
-		return JarSourceDecompiler.decompile( jarPath, effectiveSourceClasspath );
-
-	}
-
-
-
-
-	// public static void main(
-	// String[] args
-	// ) {
-	//
-	// SwaggerJsonFileWatcher watcher = new SwaggerJsonFileWatcher(
-	// SwaggerJsonFileWatcher.Config
-	// .builder()
-	// .watchDirectory( "src/main/java" )
-	// .swaggerOutputFile( "src/main/resources/static/swagger.json" )
-	// .build()
-	// );
-	// watcher.generateSwaggerJson(); // 단발 실행
-	//
-	// }
 
 }

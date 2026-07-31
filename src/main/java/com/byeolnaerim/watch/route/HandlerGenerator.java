@@ -159,6 +159,8 @@ public class HandlerGenerator extends AbstractWatcher {
 
 		private final List<StaticImportSpec> autoinjectionHandlerRequiredImportsStatic;
 
+		private final List<Class<?>> autoinjectionHandlerAnnotations;
+
 		private Config(
 						Builder b
 		) {
@@ -170,6 +172,7 @@ public class HandlerGenerator extends AbstractWatcher {
 			this.handlerOutputDir = b.handlerOutputDir.replace( '\\', '/' ).replace( '.', '/' );
 			this.autoinjectionHandlerRequiredImports = List.copyOf( b.autoInjectionHandlerRequiredImports );
 			this.autoinjectionHandlerRequiredImportsStatic = List.copyOf( b.autoInjectionHandlerRequiredImportsStatic );
+			this.autoinjectionHandlerAnnotations = List.copyOf( b.autoInjectionHandlerAnnotations );
 
 		}
 
@@ -233,6 +236,13 @@ public class HandlerGenerator extends AbstractWatcher {
 
 		}
 
+		/** get autoinjectionHandlerAnnotations */
+		public List<Class<?>> autoinjectionHandlerAnnotations() {
+
+			return autoinjectionHandlerAnnotations;
+
+		}
+
 		/**
 		 * Creates a new handler-generator configuration builder.
 		 *
@@ -272,6 +282,8 @@ public class HandlerGenerator extends AbstractWatcher {
 						reactor.core.publisher.Mono.class
 					)
 			);
+
+			private final List<Class<?>> autoInjectionHandlerAnnotations = new ArrayList<>();
 
 			private final List<StaticImportSpec> autoInjectionHandlerRequiredImportsStatic = new ArrayList<>(
 				List
@@ -401,11 +413,28 @@ public class HandlerGenerator extends AbstractWatcher {
 			}
 
 			/**
+			 * Adds an annotation to generated handler classes.
+			 *
+			 * @param annotationType
+			 *            the annotation type
+			 *
+			 * @return this builder
+			 */
+			public Builder addAutoAnnotation(
+				Class<?> annotationType
+			) {
+
+				this.autoInjectionHandlerAnnotations.add( annotationType );
+				return this;
+
+			}
+
+			/**
 			 * Adds a static import to generated handler classes.
 			 *
 			 * @param spec
 			 *            the static import specification
-			 * 
+			 *
 			 * @return this builder
 			 */
 			public Builder addStaticAutoImport(
@@ -640,12 +669,13 @@ public class HandlerGenerator extends AbstractWatcher {
 					);
 					String classVariableName = routerFirstPathName + "Handler";
 					String className = capitalizeFirst( classVariableName );
+					String targetHandlerPackage = resolveTargetHandlerPackage( cu );
 
 					// 루트 nest 기준으로 엔드포인트 파싱(구버전 동일)
 					List<RouteMapping> routeMappings = parseRouteMappings( rootNest, method );
 
 					// 구버전 동일: 무조건 클래스 스켈레톤 보장
-					anyChanged |= generateOrUpdateHandlerClass( className, null );
+					anyChanged |= generateOrUpdateHandlerClass( className, null, targetHandlerPackage );
 
 					// 각 엔드포인트 보정(핸들러 null이거나 null 반환 람다일 때만)
 					routeMappings.forEach( e -> {
@@ -669,7 +699,7 @@ public class HandlerGenerator extends AbstractWatcher {
 							}
 
 						} else if (e.isHandlerNull() || e.isLambdaNullReturn()) {
-							generateOrUpdateHandlerClass( className, methodName );
+							generateOrUpdateHandlerClass( className, methodName, targetHandlerPackage );
 							e.httpMethod
 								.setArgument(
 									handlerIdx,
@@ -688,7 +718,7 @@ public class HandlerGenerator extends AbstractWatcher {
 
 					if (! hasParam) {
 						method.addParameter( className, classVariableName );
-						cu.addImport( config.handlerPackage() + "." + className );
+						cu.addImport( targetHandlerPackage + "." + className );
 
 					}
 
@@ -710,11 +740,11 @@ public class HandlerGenerator extends AbstractWatcher {
 
 	/** 핸들러 클래스 생성/업데이트 (파일 존재 시 javaParser로 파싱) */
 	private boolean generateOrUpdateHandlerClass(
-		String handlerClassName, String handlerMethodName
+		String handlerClassName, String handlerMethodName, String targetHandlerPackage
 	) {
 
-		String filePath = config.handlerOutputDir() + (config.handlerOutputDir().endsWith( "/" ) ? "" : "/") + handlerClassName + ".java";
-		File handlerFile = Paths.get( filePath ).toFile();
+		File handlerFile = findHandlerFile( handlerClassName, targetHandlerPackage )
+			.orElseGet( () -> handlerFileForPackage( handlerClassName, targetHandlerPackage ).toFile() );
 		CompilationUnit handlerCU;
 		ClassOrInterfaceDeclaration handlerClass = null;
 		boolean changed = false;
@@ -748,14 +778,14 @@ public class HandlerGenerator extends AbstractWatcher {
 
 			} else {
 				handlerCU = new CompilationUnit();
-				handlerCU.setPackageDeclaration( config.handlerPackage() );
+				handlerCU.setPackageDeclaration( targetHandlerPackage );
 				handlerClass = handlerCU.addClass( handlerClassName ).setPublic( true );
-				// handlerClass.addAnnotation( "Component" );
 				// addAutowiredField( handlerClass, "mongoQueryBuilder", "MongoQueryBuilder" );
 				addHandlerMethod( handlerClass, handlerMethodName );
 
 			}
 
+			addHandlerAnnotations( handlerCU, handlerClass );
 			addHandlerRequiredImports( handlerCU );
 			changed |= saveFileWithFormatting( handlerFile.toPath(), handlerCU );
 
@@ -765,6 +795,85 @@ public class HandlerGenerator extends AbstractWatcher {
 		}
 
 		return changed;
+
+	}
+
+	private Optional<File> findHandlerFile(
+		String handlerClassName, String targetHandlerPackage
+	) {
+
+		Path expectedFile = handlerFileForPackage( handlerClassName, targetHandlerPackage );
+		if (Files.exists( expectedFile ))
+			return Optional.of( expectedFile.toFile() );
+
+		Path handlerRoot = Paths.get( config.handlerOutputDir() );
+		if (! Files.exists( handlerRoot ))
+			return Optional.empty();
+
+		try (Stream<Path> paths = Files.walk( handlerRoot )) {
+			List<Path> matches = paths
+				.filter( Files::isRegularFile )
+				.filter( path -> path.getFileName().toString().equals( handlerClassName + ".java" ) )
+				.toList();
+
+			if (matches.size() > 1) {
+				throw new IllegalStateException(
+					"Multiple handler classes found for " + handlerClassName + ": " + matches
+				);
+
+			}
+
+			return matches.stream().findFirst().map( Path::toFile );
+
+		} catch (IOException e) {
+			throw new RuntimeException( "Failed to scan handler package: " + handlerRoot, e );
+
+		}
+
+	}
+
+	private Path handlerFileForPackage(
+		String handlerClassName, String targetHandlerPackage
+	) {
+
+		String relativePackage = targetHandlerPackage.equals( config.handlerPackage() )
+			? ""
+			: targetHandlerPackage.substring( config.handlerPackage().length() + 1 ).replace( '.', File.separatorChar );
+		return relativePackage.isBlank()
+			? Paths.get( config.handlerOutputDir(), handlerClassName + ".java" )
+			: Paths.get( config.handlerOutputDir(), relativePackage, handlerClassName + ".java" );
+
+	}
+
+	private String resolveTargetHandlerPackage(
+		CompilationUnit routerCU
+	) {
+
+		String routerSourcePackage = routerCU.getPackageDeclaration()
+			.map( declaration -> declaration.getNameAsString() )
+			.orElse( config.routerPackage() );
+
+		if (
+			! routerSourcePackage.equals( config.routerPackage() )
+				&& ! routerSourcePackage.startsWith( config.routerPackage() + "." )
+		)
+			return config.handlerPackage();
+
+		String childPackage = routerSourcePackage.substring( config.routerPackage().length() );
+		return config.handlerPackage() + childPackage;
+
+	}
+
+	private void addHandlerAnnotations(
+		CompilationUnit cu, ClassOrInterfaceDeclaration handlerClass
+	) {
+
+		for (Class<?> annotationType : config.autoinjectionHandlerAnnotations()) {
+			if (handlerClass.getAnnotationByName( annotationType.getSimpleName() ).isEmpty())
+				handlerClass.addAnnotation( annotationType.getSimpleName() );
+			addImportIfAbsent( cu, annotationType.getCanonicalName() );
+
+		}
 
 	}
 

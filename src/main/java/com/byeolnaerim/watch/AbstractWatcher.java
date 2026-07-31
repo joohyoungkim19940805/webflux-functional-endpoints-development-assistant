@@ -13,9 +13,10 @@ import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -31,6 +32,10 @@ import reactor.core.publisher.Sinks;
  * which helps avoid unnecessary downstream reloads.</p>
  */
 public abstract class AbstractWatcher implements AutoCloseable {
+
+	private static final long GENERATED_EVENT_SUPPRESSION_MILLIS = 2_000L;
+
+	private static final ConcurrentMap<Path, Long> RECENT_GENERATED_PATHS = new ConcurrentHashMap<>();
 
 	private final Sinks.Many<FileChange> changeSink = Sinks.many().multicast().onBackpressureBuffer();
 
@@ -68,15 +73,17 @@ public abstract class AbstractWatcher implements AutoCloseable {
 
 	/**
 	 * Returns the file-system event kinds to monitor.
-	 * <p>The default implementation watches create and modify events.</p>
-	 * 어떤 이벤트를 감시할지 (default: CREATE/MODIFY)
+	 * <p>The default implementation watches create, modify, and delete events.</p>
+	 * 어떤 이벤트를 감시할지 (default: CREATE/MODIFY/DELETE)
 	 * 
 	 * @return the monitored event kinds
 	 */
 	protected WatchEvent.Kind<?>[] kinds() {
 
 		return new WatchEvent.Kind<?>[] {
-			StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY
+			StandardWatchEventKinds.ENTRY_CREATE,
+			StandardWatchEventKinds.ENTRY_MODIFY,
+			StandardWatchEventKinds.ENTRY_DELETE
 		};
 
 	}
@@ -105,7 +112,10 @@ public abstract class AbstractWatcher implements AutoCloseable {
 		if (Arrays.equals( old, newBytes ))
 			return false;
 		Files.createDirectories( out.getParent() );
+		Path normalizedOut = out.toAbsolutePath().normalize();
 		Path tmp = out.getParent().resolve( out.getFileName() + ".tmp" );
+		markGeneratedPath( normalizedOut );
+		markGeneratedPath( tmp );
 		Files.write( tmp, newBytes );
 		Files
 			.move(
@@ -120,17 +130,14 @@ public abstract class AbstractWatcher implements AutoCloseable {
 
 	/**
 	 * Returns the externally visible stream of file-change events.
-	 * <p>The stream is lightly coalesced to reduce bursts of repeated file-system events
-	 * from the same change sequence.</p>
+	 * <p>Debouncing is intentionally handled by the orchestrator so create/delete
+	 * events from the same burst are not discarded before cache invalidation.</p>
 	 *
 	 * @return a reactive stream of file changes
 	 */
 	public Flux<FileChange> events() {
 
-		// 짧은 디바운스: 같은 디렉터리에서 잦은 이벤트를 약간 합침
-		return changeSink
-			.asFlux()
-			.sampleTimeout( fc -> Mono.delay( Duration.ofMillis( 250 ) ) );
+		return changeSink.asFlux();
 
 	}
 
@@ -176,8 +183,13 @@ public abstract class AbstractWatcher implements AutoCloseable {
 
 					for (WatchEvent<?> event : key.pollEvents()) {
 						WatchEvent.Kind<?> kind = event.kind();
-						if (kind == StandardWatchEventKinds.OVERFLOW)
+
+						if (kind == StandardWatchEventKinds.OVERFLOW) {
+							changeSink.tryEmitNext( new FileChange( base, kind, getClass().getSimpleName() ) );
 							continue;
+
+						}
+
 						@SuppressWarnings("unchecked")
 						Path name = ((WatchEvent<Path>) event).context();
 						Path child = dir.resolve( name );
@@ -209,11 +221,24 @@ public abstract class AbstractWatcher implements AutoCloseable {
 
 						}
 
-						changeSink.tryEmitNext( new FileChange( child, kind, getClass().getSimpleName() ) );
+						if (! shouldSuppressEvent( child )) {
+							changeSink.tryEmitNext( new FileChange( child, kind, getClass().getSimpleName() ) );
+
+						}
 
 					}
 
-					key.reset();
+					if (! key.reset()) {
+						changeSink.tryEmitNext(
+							new FileChange( dir, StandardWatchEventKinds.ENTRY_DELETE, getClass().getSimpleName() )
+						);
+
+						if (dir.equals( base )) {
+							break;
+
+						}
+
+					}
 
 				}
 
@@ -232,6 +257,50 @@ public abstract class AbstractWatcher implements AutoCloseable {
 		}, getClass().getSimpleName() + "-watch-loop" );
 		loopThread.setDaemon( true );
 		loopThread.start();
+
+	}
+
+	private static void markGeneratedPath(
+		Path path
+	) {
+
+		if (path == null)
+			return;
+
+		long now = System.currentTimeMillis();
+		RECENT_GENERATED_PATHS.entrySet().removeIf( entry -> entry.getValue() < now );
+		RECENT_GENERATED_PATHS.put( path.toAbsolutePath().normalize(), now + GENERATED_EVENT_SUPPRESSION_MILLIS );
+
+	}
+
+	private static boolean shouldSuppressEvent(
+		Path path
+	) {
+
+		if (path == null)
+			return false;
+
+		Path normalized = path.toAbsolutePath().normalize();
+		String fileName = normalized.getFileName() == null ? "" : normalized.getFileName().toString();
+
+		if (fileName.endsWith( ".tmp" ) || fileName.endsWith( "~" )) {
+			return true;
+
+		}
+
+		long now = System.currentTimeMillis();
+		Long suppressUntil = RECENT_GENERATED_PATHS.get( normalized );
+
+		if (suppressUntil == null)
+			return false;
+
+		if (suppressUntil >= now) {
+			return true;
+
+		}
+
+		RECENT_GENERATED_PATHS.remove( normalized, suppressUntil );
+		return false;
 
 	}
 

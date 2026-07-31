@@ -773,24 +773,7 @@ public class EntityFileWatcher extends AbstractWatcher {
 
 		this.config = config;
 
-		Launcher spoon = new Launcher();
-		Environment env = spoon.getEnvironment();
-		env.setAutoImports( true );
-		env.setNoClasspath( true );
-		env.setShouldCompile( false );
-		env.setComplianceLevel( 21 );
-
-		rootDir = (spoon
-			.getEnvironment()
-			.getSourceOutputDirectory()
-			.getParentFile()
-			.toPath()
-			.resolve( this.config.rootPath ))
-			.toFile();
-
-		env.setSourceOutputDirectory( rootDir );
-		spoon.addInputResource( this.config.rootPath );
-		spoon.buildModel();
+		rootDir = Paths.get( this.config.rootPath ).toAbsolutePath().normalize().toFile();
 
 		try {
 			Files.createDirectories( rootDir.toPath() );

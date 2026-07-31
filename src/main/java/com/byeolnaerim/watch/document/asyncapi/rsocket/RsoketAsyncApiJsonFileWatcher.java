@@ -1,38 +1,25 @@
 package com.byeolnaerim.watch.document.asyncapi.rsocket;
 
 
-import java.io.File;
 import java.io.IOException;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.CodeSource;
-import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import com.byeolnaerim.watch.AbstractWatcher;
 import com.byeolnaerim.watch.ProjectDefaults;
-import com.byeolnaerim.watch.document.JarSourceDecompiler;
+import com.byeolnaerim.watch.document.AbstractSpoonDocumentWatcher;
+import com.byeolnaerim.watch.document.SpoonAnalysisContext;
+import com.byeolnaerim.watch.document.SpoonAnalysisRequest;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
-import spoon.Launcher;
-import spoon.reflect.CtModel;
-import spoon.reflect.declaration.CtType;
 
 
 /**
  * Watches source files and regenerates an AsyncAPI JSON document for RSocket endpoints.
  */
-public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
+public class RsoketAsyncApiJsonFileWatcher extends AbstractSpoonDocumentWatcher {
 
 	/** Immutable configuration for {@link RsoketAsyncApiJsonFileWatcher}. */
 	public static final class Config {
@@ -217,10 +204,13 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 
 	}
 
+
 	@Override
 	public Mono<Boolean> runGenerateTask() {
 
 		return Mono.fromCallable( () -> {
+
+
 			String json = generateAsyncApiJson();
 			Path out = Paths.get( config.asyncApiOutputFile() );
 			return writeIfChanged( out, json.getBytes( StandardCharsets.UTF_8 ) );
@@ -252,24 +242,18 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 	private String generateAsyncApiJson() {
 
 		try {
-			Set<String> effectiveSourceClasspath = buildEffectiveSourceClasspath();
+			SpoonAnalysisContext analysis = analyzeSpoon(
+					SpoonAnalysisRequest
+						.of(
+							config.watchDirectory(),
+							config.sourceClasspath(),
+							config.decompileJarPaths(),
+							config.decompileJarClasses()
+						)
+				);
 
-			Launcher launcher = new Launcher();
-			launcher.addInputResource( config.watchDirectory() );
-			launcher.getEnvironment().setAutoImports( true );
-			launcher.getEnvironment().setNoClasspath( true );
-
-			if (! effectiveSourceClasspath.isEmpty()) {
-				launcher.getEnvironment().setSourceClasspath( effectiveSourceClasspath.toArray( String[]::new ) );
-
-			}
-
-			launcher.buildModel();
-			CtModel model = launcher.getModel();
-			Map<String, CtType<?>> externalTypes = buildExternalTypeRegistry( effectiveSourceClasspath );
-
-			RsoketParser parser = new RsoketParser( externalTypes );
-			List<RsoketRouteInfo> routes = parser.extractRsoketRoutes( model.getAllTypes() );
+			RsoketParser parser = new RsoketParser( analysis.externalTypes() );
+			List<RsoketRouteInfo> routes = parser.extractRsoketRoutes( analysis.projectModel().getAllTypes() );
 			routes
 				.sort(
 					Comparator
@@ -289,204 +273,5 @@ public class RsoketAsyncApiJsonFileWatcher extends AbstractWatcher {
 		return "";
 
 	}
-
-	private Set<String> buildEffectiveSourceClasspath() {
-
-		Set<String> effectiveSourceClasspath = new LinkedHashSet<>();
-		effectiveSourceClasspath.addAll( collectRuntimeClasspathEntries() );
-
-		if (! config.sourceClasspath().isEmpty()) {
-			effectiveSourceClasspath
-				.addAll(
-					config
-						.sourceClasspath()
-						.stream()
-						.map( p -> Paths.get( p ).toAbsolutePath().normalize().toString() )
-						.toList()
-				);
-
-		}
-
-		for (Class<?> markerClass : config.decompileJarClasses()) {
-			effectiveSourceClasspath.add( resolveClassLocation( markerClass ).toString() );
-
-		}
-
-		effectiveSourceClasspath
-			.addAll(
-				config
-					.decompileJarPaths()
-					.stream()
-					.map( p -> Paths.get( p ).toAbsolutePath().normalize().toString() )
-					.toList()
-			);
-
-		return effectiveSourceClasspath
-			.stream()
-			.filter( this::isValidClasspathEntry )
-			.collect( Collectors.toCollection( LinkedHashSet::new ) );
-
-	}
-
-	private List<String> collectRuntimeClasspathEntries() {
-
-		String rawClasspath = System.getProperty( "java.class.path", "" );
-
-		if (rawClasspath == null || rawClasspath.isBlank()) {
-			return List.of();
-
-		}
-
-		List<String> result = new ArrayList<>();
-
-		for (String entry : rawClasspath.split( java.util.regex.Pattern.quote( File.pathSeparator ) )) {
-			if (entry == null || entry.isBlank())
-				continue;
-
-			Path path = Paths.get( entry ).toAbsolutePath().normalize();
-
-			if (Files.exists( path )) {
-				result.add( path.toString() );
-
-			}
-
-		}
-
-		return result;
-
-	}
-
-	private boolean isValidClasspathEntry(
-		String entry
-	) {
-
-		try {
-			Path path = Paths.get( entry ).toAbsolutePath().normalize();
-
-			if (! Files.exists( path ))
-				return false;
-
-			if (Files.isRegularFile( path )) {
-				return path.getFileName().toString().toLowerCase().endsWith( ".jar" );
-
-			}
-
-			return Files.isDirectory( path ) && containsClassFile( path );
-
-		} catch (Exception e) {
-			return false;
-
-		}
-
-	}
-
-	private boolean containsClassFile(
-		Path dir
-	) {
-
-		try (Stream<Path> walk = Files.walk( dir )) {
-			return walk.anyMatch( p -> Files.isRegularFile( p ) && p.getFileName().toString().endsWith( ".class" ) );
-
-		} catch (IOException e) {
-			return false;
-
-		}
-
-	}
-
-	private Map<String, CtType<?>> buildExternalTypeRegistry(
-		Set<String> effectiveSourceClasspath
-	) {
-
-		Map<String, CtType<?>> result = new HashMap<>();
-		Set<Path> jarLocations = new LinkedHashSet<>();
-
-		for (String jarPath : config.decompileJarPaths()) {
-			jarLocations.add( Paths.get( jarPath ).toAbsolutePath().normalize() );
-
-		}
-
-		for (Class<?> markerClass : config.decompileJarClasses()) {
-			Path location = resolveClassLocation( markerClass );
-
-			if (Files.isRegularFile( location ) && location.getFileName().toString().toLowerCase().endsWith( ".jar" )) {
-				jarLocations.add( location );
-
-			}
-
-		}
-
-		for (Path jarLocation : jarLocations) {
-			Path decompiledSourceDir = decompileJarToSourceDir( jarLocation.toString(), effectiveSourceClasspath );
-			loadExternalTypesFromSourceDir( result, decompiledSourceDir, effectiveSourceClasspath );
-
-		}
-
-		return result;
-
-	}
-
-	private void loadExternalTypesFromSourceDir(
-		Map<String, CtType<?>> result, Path sourceDir, Set<String> effectiveSourceClasspath
-	) {
-
-		Launcher externalLauncher = new Launcher();
-		externalLauncher.addInputResource( sourceDir.toString() );
-		externalLauncher.getEnvironment().setAutoImports( true );
-		externalLauncher.getEnvironment().setNoClasspath( true );
-
-		if (! effectiveSourceClasspath.isEmpty()) {
-			externalLauncher.getEnvironment().setSourceClasspath( effectiveSourceClasspath.toArray( String[]::new ) );
-
-		}
-
-		externalLauncher.buildModel();
-
-		for (CtType<?> type : externalLauncher.getModel().getAllTypes()) {
-			result.put( type.getQualifiedName(), type );
-
-		}
-
-	}
-
-	private Path resolveClassLocation(
-		Class<?> markerClass
-	) {
-
-		if (markerClass == null) {
-			throw new IllegalArgumentException( "markerClass must not be null" );
-
-		}
-
-		ProtectionDomain protectionDomain = markerClass.getProtectionDomain();
-		CodeSource codeSource = protectionDomain != null ? protectionDomain.getCodeSource() : null;
-
-		if (codeSource == null || codeSource.getLocation() == null) {
-			throw new IllegalStateException( "CodeSource location is null for class: " + markerClass.getName() );
-
-		}
-
-		try {
-			URI uri = codeSource.getLocation().toURI();
-			return Paths.get( uri ).toAbsolutePath().normalize();
-
-		} catch (Exception e) {
-			throw new IllegalStateException( "Failed to resolve class location: " + markerClass.getName(), e );
-
-		}
-
-	}
-
-	private Path decompileJarToSourceDir(
-		String jarPath, Set<String> effectiveSourceClasspath
-	) {
-
-		return JarSourceDecompiler.decompile( jarPath, effectiveSourceClasspath );
-
-	}
-
-
-
-
 
 }
