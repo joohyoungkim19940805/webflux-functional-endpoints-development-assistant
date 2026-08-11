@@ -3,8 +3,10 @@ package com.byeolnaerim.watch.document.swagger.functional;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -90,6 +92,10 @@ public class HandlerParser {
 
 	private Set<String> processingMethods = new HashSet<>();
 
+	private Set<String> parsedMethods = new HashSet<>();
+
+	private Set<CtInvocation<?>> analyzedInvocations = Collections.newSetFromMap( new IdentityHashMap<>() );
+
 	private boolean hasResponseBodyAnnotationOverride = false;
 
 	/**
@@ -110,6 +116,8 @@ public class HandlerParser {
 		pathsParamsVars.clear();
 		processedTypes.clear();
 		processingMethods.clear();
+		parsedMethods.clear();
+		analyzedInvocations.clear();
 		hasResponseBodyAnnotationOverride = false;
 		HandlerInfo handlerInfo = new HandlerInfo();
 
@@ -263,6 +271,12 @@ public class HandlerParser {
 
 		}
 
+		if (executableRef.getDeclaration() instanceof CtMethod<?> method) {
+			parseMethodBody( method, handlerInfo, routeName );
+			return;
+
+		}
+
 		// 메서드 참조에서 참조하는 메서드를 찾아야 한다.
 		// internal 기준 기존 방식 우선, 없으면 external fallback
 		CtType<?> declaringType = resolveDeclaringType( methodRef );
@@ -273,9 +287,7 @@ public class HandlerParser {
 
 			// 여기서는 매칭되는 첫 번째 메서드를 사용
 			if (! candidates.isEmpty()) {
-				CtMethod<?> method = candidates.get( 0 );
-
-				parseMethodBody( method, handlerInfo, routeName );
+				parseMethodBody( candidates.get( 0 ), handlerInfo, routeName );
 
 			}
 
@@ -336,7 +348,7 @@ public class HandlerParser {
 
 		String methodKey = method.getDeclaringType().getQualifiedName() + "#" + method.getSignature();
 
-		if (! processingMethods.add( methodKey )) {
+		if (! parsedMethods.add( methodKey ) || ! processingMethods.add( methodKey )) {
 			return;
 
 		}
@@ -445,26 +457,34 @@ public class HandlerParser {
 		List<CtInvocation<?>> invocations = body.getElements( new TypeFilter<>( CtInvocation.class ) );
 
 		for (CtInvocation<?> inv : invocations) {
-			// request/query/pathvar/body/response 등 분석
+			// TypeFilter#getElements()가 중첩 lambda 내부까지 이미 재귀 수집하므로
+			// lambda body를 별도로 다시 순회하지 않는다.
 			analyzeInvocationForRequestResponse( inv, handlerInfo, routeName );
 
-			// 이 invocation이 참조하는 메소드의 선언부가 있는지 찾고, 재귀 분석
 			CtExecutableReference<?> execRef = inv.getExecutable();
 
-			if (execRef != null) {
-				CtType<?> declaringType = resolveDeclaringType( execRef );
+			// 기존에도 ServerRequest를 받는 helper만 따라갔다. 대부분의 service/map/filter 호출은
+			// 선언부를 해석할 필요가 없으므로 먼저 signature/argument로 걸러낸다.
+			if (execRef != null
+				&& (execRef.getParameters().stream().anyMatch( p -> p != null && "ServerRequest".equals( p.getSimpleName() ) )
+					|| inv.getArguments().stream().anyMatch( arg -> arg.getType() != null && "ServerRequest".equals( arg.getType().getSimpleName() ) ))) {
+				if (execRef.getDeclaration() instanceof CtMethod<?> method) {
+					parseMethodBody( method, handlerInfo, routeName );
 
-				if (declaringType != null) {
-					List<CtMethod<?>> candidateMethods = findCandidateMethods( execRef, declaringType );
+				} else {
+					CtType<?> declaringType = resolveDeclaringType( execRef );
 
-					for (CtMethod<?> method : candidateMethods) {
-						boolean hasServerRequestParam = method
-							.getParameters()
-							.stream()
-							.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
+					if (declaringType != null) {
 
-						if (hasServerRequestParam) {
-							parseMethodBody( method, handlerInfo, routeName );
+						for (CtMethod<?> candidate : findCandidateMethods( execRef, declaringType )) {
+
+							if (candidate
+								.getParameters()
+								.stream()
+								.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) )) {
+								parseMethodBody( candidate, handlerInfo, routeName );
+
+							}
 
 						}
 
@@ -474,82 +494,12 @@ public class HandlerParser {
 
 			}
 
-			// **flatMap**, **map**, **filter** 등의 람다 인수 안에 숨어 있는 핸들러 코드도 재귀 파싱
+			// 메서드 참조는 lambda body와 달리 대상 메서드 본문이 현재 subtree에 없으므로
+			// 기존처럼 선언부를 따라간다. 같은 메서드는 parsedMethods에서 한 번만 분석된다.
 			for (CtExpression<?> arg : inv.getArguments()) {
 
-				if (arg instanceof CtLambda<?> lambda) {
-					CtBlock<?> lambdaBody = getLambdaBody( lambda );
-
-					if (lambdaBody != null) {
-						// 람다 블록 자체를 먼저 파싱
-						parseHandlerBody( lambdaBody, handlerInfo, routeName );
-
-						// ==== NEW: 람다 내부에서 호출되는 메서드들도 다시 따라가 재귀 파싱 ====
-						List<CtInvocation<?>> innerInvs = lambdaBody.getElements( new TypeFilter<>( CtInvocation.class ) );
-
-						for (CtInvocation<?> innerInv : innerInvs) {
-							CtExecutableReference<?> innerExecRef = innerInv.getExecutable();
-							if (innerExecRef == null)
-								continue;
-
-							CtType<?> innerDeclaringType = resolveDeclaringType( innerExecRef );
-							if (innerDeclaringType == null)
-								continue;
-
-							List<CtMethod<?>> innerCandidates = findCandidateMethods( innerExecRef, innerDeclaringType );
-
-							for (CtMethod<?> m : innerCandidates) {
-								boolean hasServerRequestParam = m
-									.getParameters()
-									.stream()
-									.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
-
-								if (hasServerRequestParam) {
-									parseMethodBody( m, handlerInfo, routeName );
-
-								}
-
-							}
-
-						}
-
-					}
-
-				} else if (arg instanceof CtExecutableReferenceExpression<?, ?> methodRef) {
-					// 메서드 참조 형태도 동일하게 처리하되 null 방어
-					CtExecutableReference<?> ref = ((CtExecutableReferenceExpression<?, ?>) methodRef).getExecutable();
-
-					if (ref != null) {
-						// 1) 기존 처리
-						parseMethodReferenceHandler(
-							(CtExecutableReferenceExpression<?, ?>) methodRef,
-							handlerInfo,
-							routeName
-						);
-
-						// 2) NEW: 메서드 참조가 가리키는 선언부를 찾아 재귀 파싱
-						CtType<?> declaringType = resolveDeclaringType( (CtExecutableReferenceExpression<?, ?>) methodRef );
-
-						if (declaringType != null) {
-							// 이름 기준 후보 수집(오버로드 고려 시 시그니처 비교로 보강 가능)
-							List<CtMethod<?>> candidates = findCandidateMethods( ref, declaringType );
-
-							for (CtMethod<?> m : candidates) {
-								boolean hasServerRequestParam = m
-									.getParameters()
-									.stream()
-									.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) );
-
-								if (hasServerRequestParam) {
-									parseMethodBody( m, handlerInfo, routeName );
-
-								}
-
-							}
-
-						}
-
-					}
+				if (arg instanceof CtExecutableReferenceExpression<?, ?> methodRef) {
+					parseMethodReferenceHandler( methodRef, handlerInfo, routeName );
 
 				}
 
@@ -676,101 +626,88 @@ public class HandlerParser {
 		CtInvocation<?> inv, HandlerInfo handlerInfo, String routeName
 	) {
 
-		// String simpleName = inv.getExecutable().getSimpleName();
-
-		// request.* 호출 분석 (queryParam, pathVariable)
-
-		// request.queryParams().getFirst("x")
-		if (isRequestQueryParamsGetFirstDirectCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			addParamInfo( handlerInfo, key, inv, LayerPosition.REQUEST_STRING );
+		if (! analyzedInvocations.add( inv ) || inv.getExecutable() == null) {
+			return;
 
 		}
 
-		// request.queryParams().get("x")
-		if (isRequestQueryParamsGetDirectCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			String defaultVal = findOrElseDefaultValue( inv );
-			addParamInfo( handlerInfo, key, defaultVal, inv, LayerPosition.REQUEST_STRING );
+		String name = inv.getExecutable().getSimpleName();
+
+		// get/getFirst/getOrDefault만 queryParams/pathVariables 계열 후보다.
+		// 모든 invocation에서 target.toString()/type resolution을 반복하지 않는다.
+		switch (name) {
+			case "getFirst" -> {
+				if (isRequestQueryParamsGetFirstDirectCall( inv )) {
+					addParamInfo( handlerInfo, extractStringArgument( inv, 0 ), inv, LayerPosition.REQUEST_STRING );
+
+				}
+
+				if (isQueryParamsGetFirstCall( inv )) {
+					addParamInfo( handlerInfo, extractStringArgument( inv, 0 ), inv, LayerPosition.REQUEST_STRING );
+
+				}
+
+				if (isRequestPathVariablesGetFirstCall( inv )) {
+					String key = extractStringArgument( inv, 0 );
+					addParamInfo( handlerInfo, key, findOrElseDefaultValue( inv ), inv, LayerPosition.REQUEST_PATH );
+
+				}
+
+			}
+			case "get" -> {
+				if (isRequestQueryParamsGetDirectCall( inv )) {
+					String key = extractStringArgument( inv, 0 );
+					addParamInfo( handlerInfo, key, findOrElseDefaultValue( inv ), inv, LayerPosition.REQUEST_STRING );
+
+				}
+
+				if (isQueryParamsGetCall( inv )) {
+					String key = extractStringArgument( inv, 0 );
+					addParamInfo( handlerInfo, key, findOrElseDefaultValue( inv ), inv, LayerPosition.REQUEST_STRING );
+
+				}
+
+				if (isRequestPathVariablesGetCall( inv )) {
+					String key = extractStringArgument( inv, 0 );
+					addParamInfo( handlerInfo, key, findOrElseDefaultValue( inv ), inv, LayerPosition.REQUEST_PATH );
+
+				}
+
+			}
+			case "getOrDefault" -> {
+				if (isRequestQueryParamsGetOrDefaultDirectCall( inv ) || isQueryParamsGetOrDefaultCall( inv )) {
+					addParamInfo( handlerInfo, extractStringArgument( inv, 0 ), null, inv, LayerPosition.REQUEST_STRING );
+
+				}
+
+				if (isRequestPathVariablesGetOrDefaultCall( inv )) {
+					addParamInfo( handlerInfo, extractStringArgument( inv, 0 ), null, inv, LayerPosition.REQUEST_PATH );
+
+				}
+
+			}
+			case "queryParam" -> {
+				if (isTargetRequest( inv )) {
+					String key = extractStringArgument( inv, 0 );
+					addParamInfo( handlerInfo, key, findOrElseDefaultValue( inv ), inv, LayerPosition.REQUEST_STRING );
+
+				}
+
+			}
+			case "pathVariable" -> {
+				if (isTargetRequest( inv )) {
+					String key = extractStringArgument( inv, 0 );
+					addParamInfo( handlerInfo, key, key, inv, LayerPosition.REQUEST_PATH );
+
+				}
+
+			}
+			default -> {}
 
 		}
 
-		// request.queryParams().getOrDefault("x", ...)
-		if (isRequestQueryParamsGetOrDefaultDirectCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			addParamInfo( handlerInfo, key, null, inv, LayerPosition.REQUEST_STRING );
-
-		}
-
-		// request.queryParam("key") -> query string 파싱
-		// 기존 request.queryParam(...) 처리
-		if (isRequestQueryParamCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			String defaultVal = findOrElseDefaultValue( inv );
-			addParamInfo( handlerInfo, key, defaultVal, inv, LayerPosition.REQUEST_STRING );
-
-		}
-
-		// request queryParams.get
-		if (isQueryParamsGetCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			String defaultVal = findOrElseDefaultValue( inv );
-			addParamInfo( handlerInfo, key, defaultVal, inv, LayerPosition.REQUEST_STRING );
-
-		}
-
-		// request.queryParam(...).getFirst
-		if (isQueryParamsGetFirstCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			addParamInfo( handlerInfo, key, inv, LayerPosition.REQUEST_STRING );
-
-		}
-
-		// reuqest.queryParam.getOrDefault
-		if (isQueryParamsGetOrDefaultCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			// String defaultVal = extractStringArgument( inv, 1 );
-			addParamInfo( handlerInfo, key, null, inv, LayerPosition.REQUEST_STRING );
-
-		}
-
-		// request.pathVariable("var") -> path variable 파싱
-		if (isRequestPathVariableCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			addParamInfo( handlerInfo, key, key, inv, LayerPosition.REQUEST_PATH );
-			// HandlerInfo.ParamInfo pInfo = new HandlerInfo.ParamInfo();
-			// pInfo.setName( varName );
-			// pInfo.setRequired( true ); // pathVar는 보통 필수
-			// handlerInfo.getPathVariableInfo().put( varName, pInfo );
-
-		}
-
-		if (isRequestPathVariablesGetCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			String defaultVal = findOrElseDefaultValue( inv );
-			addParamInfo( handlerInfo, key, defaultVal, inv, LayerPosition.REQUEST_PATH );
-
-		}
-
-		if (isRequestPathVariablesGetFirstCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-			String defaultVal = findOrElseDefaultValue( inv );
-			addParamInfo( handlerInfo, key, defaultVal, inv, LayerPosition.REQUEST_PATH );
-
-		}
-
-		if (isRequestPathVariablesGetOrDefaultCall( inv )) {
-			String key = extractStringArgument( inv, 0 );
-//			String defaultVal = extractStringArgument( inv, 1 );
-			addParamInfo( handlerInfo, key, null, inv, LayerPosition.REQUEST_PATH );
-
-		}
-
-		// request body 파싱
-		// request.bodyToMono(Xxx.class), request.bodyToFlux(Xxx.class)
-		boolean isBodyToXCall = isBodyToXCall( inv );
-		// accountService.validateSignatureAndParseBody(request, Xxx.class)
-		boolean isValidateSignatureAndParseBodyCall = isValidateSignatureAndParseBodyCall( inv );
+		boolean isBodyToXCall = (name.equals( "bodyToMono" ) || name.equals( "bodyToFlux" )) && isTargetRequest( inv );
+		boolean isValidateSignatureAndParseBodyCall = name.equals( "validateSignatureAndParseBody" ) && inv.getArguments().size() > 1;
 
 		if (isBodyToXCall || isValidateSignatureAndParseBodyCall) {
 			int targetIndex = isBodyToXCall ? 0 : 1;
@@ -779,27 +716,24 @@ public class HandlerParser {
 			CtTypeReference<?> bodyClassRef = extractTypeRefArgument( inv, targetIndex );
 
 			HandlerInfo.Info requestBodyInfo = new HandlerInfo.Info();
-
 			requestBodyInfo.setType( bodyClass );
 			requestBodyInfo.setTypeRef( bodyClassRef );
-
-			parseClassFields( arg.getFactory().Type().createReference( bodyClass ), requestBodyInfo );
+			requestBodyInfo
+				.setFields(
+					buildParamInfoFromTypeRef(
+						bodyClassRef != null ? bodyClassRef : arg.getFactory().Type().createReference( bodyClass )
+					).getFields()
+				);
 
 			if (! arg.getReferencedTypes().isEmpty()) {
-
 				var refs = inv
 					.getArguments()
 					.get( targetIndex )
 					.getReferencedTypes()
 					.stream()
-					.filter(
-						e -> ! "Object".equals( e.getSimpleName() ) && ! bodyClass.getSimpleName().equals( e.getSimpleName() )
-					)
+					.filter( e -> ! "Object".equals( e.getSimpleName() ) && ! bodyClass.getSimpleName().equals( e.getSimpleName() ) )
 					.toList();
-				refs.forEach( e -> {
-					parseClassFields( e, requestBodyInfo );
-
-				} );
+				refs.forEach( e -> parseClassFields( e, requestBodyInfo ) );
 				requestBodyInfo
 					.setGenericTypes(
 						refs
@@ -820,10 +754,12 @@ public class HandlerParser {
 
 		}
 
-		// response 파싱
-		// ok(), badRequest(), notFound(), noContent(), status(...)
-		// 이런 체인 호출을 따라 올라가 status code와 body/bodyValue에 전달된 타입 파악
-		if (isResponseCallChain( inv )) {
+		if ((name.equals( "body" )
+			|| name.equals( "bodyValue" )
+			|| name.equals( "contentType" )
+			|| name.equals( "build" )
+			|| name.equals( "noContent" ))
+			&& resolveResponseStatusCode( inv ) != null) {
 			parseResponseBodyFromResponseChain( inv, handlerInfo );
 
 		}
@@ -1113,8 +1049,12 @@ public class HandlerParser {
 
 		String name = inv.getExecutable().getSimpleName();
 
-		if (name.equals( "body" ) || name.equals( "bodyValue" ) || name.equals( "contentType" ) || name.equals( "build" )) {
-			return resolveResponseStatusCode( inv ) != null;
+		if (! name.equals( "body" )
+			&& ! name.equals( "bodyValue" )
+			&& ! name.equals( "contentType" )
+			&& ! name.equals( "build" )
+			&& ! name.equals( "noContent" )) {
+			return false;
 
 		}
 
@@ -1633,7 +1573,10 @@ public class HandlerParser {
 
 				}
 
-				parseClassFields( envelopeTypeRef, pInfo );
+				if (pInfo.getFields().isEmpty()) {
+					parseClassFields( envelopeTypeRef, pInfo );
+
+				}
 
 				pInfo.setPosition( LayerPosition.RESPONSE_BODY );
 
@@ -1747,7 +1690,7 @@ public class HandlerParser {
 				CtTypeReference<?> valTypeRef = firstArg.getType();
 				HandlerInfo.Info pInfo = buildParamInfoFromTypeRef( valTypeRef );
 
-				if (valTypeRef != null) {
+				if (valTypeRef != null && pInfo.getFields().isEmpty()) {
 					parseClassFields( valTypeRef, pInfo );
 
 				}
@@ -2548,7 +2491,7 @@ public class HandlerParser {
 		info.setPosition( LayerPosition.RESPONSE_BODY );
 
 		// 필드 파싱 (POJO/record/프로젝트 패키지 등 기존 조건에 맞춰 확장)
-		if (typeRef != null) {
+		if (typeRef != null && info.getFields().isEmpty()) {
 			parseClassFields( typeRef, info );
 
 		}

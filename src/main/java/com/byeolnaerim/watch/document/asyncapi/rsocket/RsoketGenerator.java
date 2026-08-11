@@ -1,7 +1,6 @@
 package com.byeolnaerim.watch.document.asyncapi.rsocket;
 
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,6 +17,8 @@ import tools.jackson.databind.json.JsonMapper;
  * than the richer AsyncAPI document.</p>
  */
 public class RsoketGenerator {
+
+	private static final JsonMapper OBJECT_MAPPER = JsonMapper.builder().findAndAddModules().build();
 
 	/**
 	 * Generates a simplified RSocket JSON document from the given route metadata.
@@ -36,7 +37,6 @@ public class RsoketGenerator {
 		throws Exception {
 
 		Map<String, Object> root = new LinkedHashMap<>();
-		root.put( "generatedAt", Instant.now().toString() );
 		root.put( "format", "rsoket" );
 
 		Map<String, Object> components = new LinkedHashMap<>();
@@ -60,8 +60,7 @@ public class RsoketGenerator {
 
 		root.put( "controllers", controllers );
 
-		JsonMapper objectMapper = JsonMapper.builder().findAndAddModules().build();
-		return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString( root );
+		return OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString( root );
 
 	}
 
@@ -80,14 +79,20 @@ public class RsoketGenerator {
 
 		List<Map<String, Object>> payload = new ArrayList<>();
 		hi.getPayloadInfo().forEach( (name, info) -> {
-			payload.add( Map.of( "name", name, "schema", mapType( info, schemas ) ) );
+			Map<String, Object> param = new LinkedHashMap<>();
+			param.put( "name", name );
+			param.put( "schema", mapType( info, schemas ) );
+			payload.add( param );
 
 		} );
 		m.put( "payload", payload );
 
 		List<Map<String, Object>> destVars = new ArrayList<>();
 		hi.getDestinationVariableInfo().forEach( (name, info) -> {
-			destVars.add( Map.of( "name", name, "schema", mapType( info, schemas ) ) );
+			Map<String, Object> param = new LinkedHashMap<>();
+			param.put( "name", name );
+			param.put( "schema", mapType( info, schemas ) );
+			destVars.add( param );
 
 		} );
 		m.put( "destinationVariables", destVars );
@@ -175,6 +180,18 @@ public class RsoketGenerator {
 		} );
 
 		return schema;
+
+	}
+
+	private static void ensureSchema(
+		String schemaId, RsoketTypeInfo info, Map<String, Object> schemas
+	) {
+
+		if (schemas.containsKey( schemaId )) { return; }
+
+		Map<String, Object> schema = new LinkedHashMap<>();
+		schemas.put( schemaId, schema );
+		schema.putAll( buildSchema( info, schemas ) );
 
 	}
 
@@ -283,14 +300,7 @@ public class RsoketGenerator {
 		if (isPojo) {
 			String id = schemaId( info );
 			String ref = "#/components/schemas/" + id;
-
-			if (schemas.containsKey( id ) && schemas.get( id ) instanceof Map map) {
-				map.putAll( buildSchema( info, schemas ) );
-
-			} else {
-				schemas.putIfAbsent( id, buildSchema( info, schemas ) );
-
-			}
+			ensureSchema( id, info, schemas );
 
 			schema.put( "$ref", ref );
 			return schema;

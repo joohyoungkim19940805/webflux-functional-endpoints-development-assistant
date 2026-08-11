@@ -1,7 +1,6 @@
 package com.byeolnaerim.watch.document.asyncapi.rsocket;
 
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,6 +24,8 @@ import tools.jackson.databind.json.JsonMapper;
  * - Rsoket 모듈이 REST(swagger) 모듈에 의존하지 않도록 HandlerInfo를 사용하지 않는다.
  */
 public class RsoketAsyncApiGenerator {
+
+	private static final JsonMapper OBJECT_MAPPER = JsonMapper.builder().findAndAddModules().build();
 
 	/**
 	 * Mutable options used when generating the AsyncAPI document.
@@ -211,11 +212,18 @@ public class RsoketAsyncApiGenerator {
 
 		Map<String, Object> doc = new LinkedHashMap<>();
 		doc.put( "asyncapi", "2.6.0" );
-		doc.put( "info", Map.of( "title", options.getTitle(), "version", options.getVersion(), "description", options.getDescription() ) );
+		Map<String, Object> info = new LinkedHashMap<>();
+		info.put( "title", options.getTitle() );
+		info.put( "version", options.getVersion() );
+		info.put( "description", options.getDescription() );
+		doc.put( "info", info );
 		doc.put( "defaultContentType", options.getDefaultContentType() );
 
 		Map<String, Object> servers = new LinkedHashMap<>();
-		servers.put( options.getServerName(), Map.of( "url", options.getServerUrl(), "protocol", "rsocket" ) );
+		Map<String, Object> server = new LinkedHashMap<>();
+		server.put( "url", options.getServerUrl() );
+		server.put( "protocol", "rsocket" );
+		servers.put( options.getServerName(), server );
 		doc.put( "servers", servers );
 
 		Map<String, Object> components = new LinkedHashMap<>();
@@ -262,17 +270,10 @@ public class RsoketAsyncApiGenerator {
 			Map<String, Object> subscribe = buildSubscribeOperation( destRoutes, messages, schemas );
 
 			// channel level extensions (코드 제너레이터용)
-			ch
-				.put(
-					"x-rsocket",
-					Map
-						.of(
-							"destination",
-							destination,
-							"routes",
-							destRoutes.stream().map( RsoketAsyncApiGenerator::routeMeta ).collect( Collectors.toList() )
-						)
-				);
+			Map<String, Object> channelMeta = new LinkedHashMap<>();
+			channelMeta.put( "destination", destination );
+			channelMeta.put( "routes", destRoutes.stream().map( RsoketAsyncApiGenerator::routeMeta ).collect( Collectors.toList() ) );
+			ch.put( "x-rsocket", channelMeta );
 
 			ch.put( "publish", publish );
 			if (subscribe != null)
@@ -282,11 +283,9 @@ public class RsoketAsyncApiGenerator {
 
 		}
 
-		doc.put( "x-generatedAt", Instant.now().toString() );
 		doc.put( "x-format", "rsocket-asyncapi" );
 
-		JsonMapper mapper = JsonMapper.builder().findAndAddModules().build();
-		return mapper.writerWithDefaultPrettyPrinter().writeValueAsString( doc );
+		return OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString( doc );
 
 	}
 
@@ -373,17 +372,12 @@ public class RsoketAsyncApiGenerator {
 				continue;
 
 			hi.getDestinationVariableInfo().forEach( (name, info) -> {
-				params
-					.putIfAbsent(
-						name,
-						Map
-							.of(
-								"description",
-								"Destination variable: " + name,
-								"schema",
-								mapType( info, schemas )
-							)
-					);
+				if (params.containsKey( name )) { return; }
+
+				Map<String, Object> param = new LinkedHashMap<>();
+				param.put( "description", "Destination variable: " + name );
+				param.put( "schema", mapType( info, schemas ) );
+				params.put( name, param );
 
 			} );
 
@@ -453,7 +447,13 @@ public class RsoketAsyncApiGenerator {
 		RsoketHandlerInfo hi, Map<String, Object> schemas
 	) {
 
-		if (hi == null || hi.getPayloadInfo().isEmpty()) { return Map.of( "type", "object", "additionalProperties", false ); }
+		if (hi == null || hi.getPayloadInfo().isEmpty()) {
+			Map<String, Object> schema = new LinkedHashMap<>();
+			schema.put( "type", "object" );
+			schema.put( "additionalProperties", false );
+			return schema;
+
+		}
 
 		// 단일 payload면 그대로 사용
 		if (hi.getPayloadInfo().size() == 1) {
@@ -587,6 +587,18 @@ public class RsoketAsyncApiGenerator {
 		} );
 
 		return schema;
+
+	}
+
+	private static void ensureSchema(
+		String schemaId, RsoketTypeInfo info, Map<String, Object> schemas
+	) {
+
+		if (schemas.containsKey( schemaId )) { return; }
+
+		Map<String, Object> schema = new LinkedHashMap<>();
+		schemas.put( schemaId, schema );
+		schema.putAll( buildSchema( info, schemas ) );
 
 	}
 
@@ -731,14 +743,7 @@ public class RsoketAsyncApiGenerator {
 		if (isPojo) {
 			String id = schemaId( info );
 			String ref = "#/components/schemas/" + id;
-
-			if (schemas.containsKey( id ) && schemas.get( id ) instanceof Map map) {
-				map.putAll( buildSchema( info, schemas ) );
-
-			} else {
-				schemas.putIfAbsent( id, buildSchema( info, schemas ) );
-
-			}
+			ensureSchema( id, info, schemas );
 
 			schema.put( "$ref", ref );
 			return schema;

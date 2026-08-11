@@ -465,13 +465,16 @@ public class SwaggerJsonFileWatcher extends AbstractSpoonDocumentWatcher {
 		}
 
 		List<CtMethod<?>> routerMethods = model
-			.getElements(
-				(CtMethod<?> m) -> m
-					.getAnnotations()
-					.stream()
-					.anyMatch( a -> a.getAnnotationType().getSimpleName().equals( "Bean" ) )
-					&& m.getType().getSimpleName().contains( "RouterFunction" )
-			);
+			.getAllTypes()
+			.stream()
+			.flatMap( type -> type.getMethods().stream() )
+			.filter( m -> m
+				.getAnnotations()
+				.stream()
+				.anyMatch( a -> a.getAnnotationType().getSimpleName().equals( "Bean" ) )
+				&& m.getType().getSimpleName().contains( "RouterFunction" )
+			)
+			.toList();
 
 		List<RouteInfo> routeInfos = new ArrayList<>();
 		HandlerParser handlerParser = new HandlerParser( externalTypes );

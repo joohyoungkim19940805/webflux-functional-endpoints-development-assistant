@@ -19,6 +19,7 @@ import com.byeolnaerim.watch.FileChange;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.declaration.CtType;
+import spoon.support.SerializationModelStreamer;
 
 
 /**
@@ -31,14 +32,13 @@ public final class SpoonAnalysisCache {
 
 	private record ProjectModelKey(
 		Path watchDirectory,
-		String classpathSignature
+		List<String> sourceClasspath
 	) {}
 
 	private record ExternalModelKey(
 		Path jarLocation,
 		long size,
-		long lastModifiedMillis,
-		String classpathSignature
+		long lastModifiedMillis
 	) {}
 
 	private record RuntimeClasspathSnapshot(
@@ -122,10 +122,10 @@ public final class SpoonAnalysisCache {
 	}
 
 	/**
-	 * Invalidates cache entries affected by a runtime classpath change. Project
-	 * models are cleared because their symbol resolution can change. External
-	 * models are removed only when the changed artifact is a jar, avoiding a full
-	 * external-model rebuild for every project class compilation.
+	 * Invalidates cache entries affected by a classpath change. Project models no
+	 * longer depend on the whole runtime classpath, so only models that explicitly
+	 * use the changed source-classpath entry are removed. External jar models are
+	 * invalidated when their source jar changes.
 	 */
 	public void invalidateClasspath(
 		FileChange change
@@ -136,9 +136,8 @@ public final class SpoonAnalysisCache {
 
 		}
 
-		invalidateProjectModels();
-
 		if (change.isOverflow()) {
+			invalidateProjectModels();
 			runtimeClasspathSnapshot = null;
 			CLASSPATH_ENTRY_VALIDITY.clear();
 			EXTERNAL_MODEL_CACHE.clear();
@@ -146,16 +145,22 @@ public final class SpoonAnalysisCache {
 
 		}
 
-		Path changedPath = change.path();
-
-		if (changedPath == null) {
+		if (change.path() == null) {
 			return;
 
 		}
 
-		changedPath = changedPath.toAbsolutePath().normalize();
+		Path changedPath = change.path().toAbsolutePath().normalize();
 		runtimeClasspathSnapshot = null;
 		CLASSPATH_ENTRY_VALIDITY.remove( changedPath );
+
+		projectModelCache
+			.keySet()
+			.removeIf( key -> key
+				.sourceClasspath()
+				.stream()
+				.map( Paths::get )
+				.anyMatch( classpathEntry -> changedPath.startsWith( classpathEntry ) || classpathEntry.startsWith( changedPath ) ) );
 
 		if (changedPath.getFileName() != null
 			&& changedPath.getFileName().toString().toLowerCase().endsWith( ".jar" )) {
@@ -173,19 +178,21 @@ public final class SpoonAnalysisCache {
 		SpoonAnalysisRequest request
 	) {
 
-		Set<String> effectiveSourceClasspath = buildEffectiveSourceClasspath( request );
-		String classpathSignature = buildClasspathSignature( effectiveSourceClasspath );
-		ProjectModelKey projectKey = new ProjectModelKey( request.watchDirectory(), classpathSignature );
+		Set<String> projectSourceClasspath = buildProjectSourceClasspath( request );
+		ProjectModelKey projectKey = new ProjectModelKey( request.watchDirectory(), List.copyOf( projectSourceClasspath ) );
 
 		CtModel projectModel = projectModelCache.computeIfAbsent(
 			projectKey,
-			ignored -> buildProjectModel( request.watchDirectory(), effectiveSourceClasspath )
+			ignored -> buildProjectModel( request.watchDirectory(), projectSourceClasspath )
 		);
 
+		Set<String> effectiveSourceClasspath = request.decompileJarLocations().isEmpty()
+			? projectSourceClasspath
+			: buildEffectiveSourceClasspath( request );
 		Map<String, CtType<?>> externalTypes = new LinkedHashMap<>();
 
 		for (Path jarLocation : request.decompileJarLocations()) {
-			externalTypes.putAll( loadExternalTypes( jarLocation, effectiveSourceClasspath, classpathSignature ) );
+			externalTypes.putAll( loadExternalTypes( jarLocation, effectiveSourceClasspath ) );
 
 		}
 
@@ -206,8 +213,7 @@ public final class SpoonAnalysisCache {
 
 	private Map<String, CtType<?>> loadExternalTypes(
 		Path jarLocation,
-		Set<String> effectiveSourceClasspath,
-		String classpathSignature
+		Set<String> effectiveSourceClasspath
 	) {
 
 		Path normalizedJar = jarLocation.toAbsolutePath().normalize();
@@ -216,8 +222,7 @@ public final class SpoonAnalysisCache {
 			ExternalModelKey key = new ExternalModelKey(
 				normalizedJar,
 				Files.size( normalizedJar ),
-				Files.getLastModifiedTime( normalizedJar ).toMillis(),
-				classpathSignature
+				Files.getLastModifiedTime( normalizedJar ).toMillis()
 			);
 
 			EXTERNAL_MODEL_CACHE
@@ -247,17 +252,63 @@ public final class SpoonAnalysisCache {
 	) {
 
 		Path sourceDir = JarSourceDecompiler.decompile( jarLocation.toString(), effectiveSourceClasspath );
-		Launcher launcher = createLauncher( sourceDir, effectiveSourceClasspath );
-		launcher.buildModel();
+		String spoonVersion = Launcher.class.getPackage().getImplementationVersion();
+		Path modelCache = sourceDir
+			.resolve( ".spoon-model-" + (spoonVersion != null ? spoonVersion.replaceAll( "[^a-zA-Z0-9._-]", "_" ) : "dev") + ".bin" );
+		CtModel model = null;
+
+		if (Files.isRegularFile( modelCache )) {
+
+			try (var input = Files.newInputStream( modelCache )) {
+				model = new SerializationModelStreamer().load( input ).getModel();
+
+			} catch (Throwable ignored) {
+
+				try {
+					Files.deleteIfExists( modelCache );
+
+				} catch (IOException ignore) {}
+
+			}
+
+		}
+
+		if (model == null) {
+			Launcher launcher = createLauncher( sourceDir, Set.of() );
+			launcher.buildModel();
+			model = launcher.getModel();
+
+			try {
+				Path tempCache = modelCache.resolveSibling( modelCache.getFileName() + ".tmp-" + ProcessHandle.current().pid() );
+
+				try (var output = Files.newOutputStream( tempCache )) {
+					new SerializationModelStreamer().save( launcher.getFactory(), output );
+
+				}
+
+				try {
+					Files.move( tempCache, modelCache, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING );
+
+				} catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+					Files.move( tempCache, modelCache, java.nio.file.StandardCopyOption.REPLACE_EXISTING );
+
+				}
+
+			} catch (IOException ignored) {
+				// Persistent cache is only an optimization. Generation must still succeed when it cannot be written.
+
+			}
+
+		}
 
 		Map<String, CtType<?>> result = new LinkedHashMap<>();
 
-		for (CtType<?> type : launcher.getModel().getAllTypes()) {
+		for (CtType<?> type : model.getAllTypes()) {
 			result.put( type.getQualifiedName(), type );
 
 		}
 
-		return new ExternalSpoonModel( launcher.getModel(), Map.copyOf( result ) );
+		return new ExternalSpoonModel( model, Map.copyOf( result ) );
 
 	}
 
@@ -270,6 +321,7 @@ public final class SpoonAnalysisCache {
 		launcher.addInputResource( input.toString() );
 		launcher.getEnvironment().setAutoImports( true );
 		launcher.getEnvironment().setNoClasspath( true );
+		launcher.getEnvironment().setCommentEnabled( false );
 
 		if (! effectiveSourceClasspath.isEmpty()) {
 			launcher.getEnvironment().setSourceClasspath( effectiveSourceClasspath.toArray( String[]::new ) );
@@ -277,6 +329,26 @@ public final class SpoonAnalysisCache {
 		}
 
 		return launcher;
+
+	}
+
+	private Set<String> buildProjectSourceClasspath(
+		SpoonAnalysisRequest request
+	) {
+
+		Set<String> result = new LinkedHashSet<>();
+
+		for (Path candidate : request.sourceClasspath()) {
+			Path normalized = candidate.toAbsolutePath().normalize();
+
+			if (! request.decompileJarLocations().contains( normalized ) && isValidClasspathEntry( normalized )) {
+				result.add( normalized.toString() );
+
+			}
+
+		}
+
+		return result;
 
 	}
 
@@ -393,38 +465,6 @@ public final class SpoonAnalysisCache {
 
 	}
 
-	private String buildClasspathSignature(
-		Set<String> effectiveSourceClasspath
-	) {
 
-		StringBuilder signature = new StringBuilder();
-
-		for (String entry : effectiveSourceClasspath) {
-			Path path = Paths.get( entry ).toAbsolutePath().normalize();
-			signature.append( path );
-
-			try {
-
-				if (Files.isRegularFile( path )) {
-					signature
-						.append( ':' )
-						.append( Files.getLastModifiedTime( path ).toMillis() )
-						.append( ':' )
-						.append( Files.size( path ) );
-
-				}
-
-			} catch (IOException ignore) {
-				signature.append( ":missing" );
-
-			}
-
-			signature.append( File.pathSeparatorChar );
-
-		}
-
-		return signature.toString();
-
-	}
 
 }

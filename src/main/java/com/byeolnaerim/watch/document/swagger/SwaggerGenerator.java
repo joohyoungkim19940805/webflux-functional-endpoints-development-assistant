@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -38,6 +39,8 @@ import tools.jackson.databind.json.JsonMapper;
  * schemas, tags, and grouped tag metadata.</p>
  */
 public class SwaggerGenerator {
+
+	private static final JsonMapper OBJECT_MAPPER = JsonMapper.builder().findAndAddModules().build();
 
 	/**
 	 * Generates a Swagger/OpenAPI JSON document from the given route metadata.
@@ -88,33 +91,16 @@ public class SwaggerGenerator {
 
 		// 기본 정보 설정
 		swagger.put( "openapi", "3.0.3" );
-		swagger
-			.put(
-				"info",
-				Map
-					.of(
-						"title",
-						"Generated API Documentation",
-						"version",
-						"1.0.0",
-						"description",
-						"This Swagger documentation was automatically generated using AST.For more details, please refer to webflux-fe-dev-assistant."
-					)
-			);
-		swagger
-			.put(
-				"servers",
-				List
-					.of(
-						Map
-							.of(
-								"url",
-								"http://localhost:8795",
-								"description",
-								"Local server"
-							)
-					)
-			);
+		Map<String, Object> swaggerInfo = new LinkedHashMap<>();
+		swaggerInfo.put( "title", "Generated API Documentation" );
+		swaggerInfo.put( "version", "1.0.0" );
+		swaggerInfo.put( "description", "This Swagger documentation was automatically generated using AST.For more details, please refer to webflux-fe-dev-assistant." );
+		swagger.put( "info", swaggerInfo );
+
+		Map<String, Object> server = new LinkedHashMap<>();
+		server.put( "url", "http://localhost:8795" );
+		server.put( "description", "Local server" );
+		swagger.put( "servers", List.of( server ) );
 
 		// Paths 및 Components 설정
 		Map<String, LinkedHashMap> paths = new LinkedHashMap<>();
@@ -123,13 +109,15 @@ public class SwaggerGenerator {
 
 		Map<String, Object> parameters = new LinkedHashMap<>();
 		List<Map<String, Object>> tags = new ArrayList<>();
+		Set<String> tagNames = new HashSet<>();
 		List<Map<String, Object>> tagGroups = new ArrayList<>();
-		Map<String, List<String>> groupHierarchy = new LinkedHashMap<>();
+		Map<String, Set<String>> groupHierarchy = new LinkedHashMap<>();
 
 		routeInfos.stream().filter( e -> e.getHandlerInfo() != null ).forEach( routeInfo -> {
 
 			String url = routeInfo.getUrl();
 			String httpMethod = routeInfo.getHttpMethod().toLowerCase();
+			String tagName = routeInfo.getParentGroup() + "/" + routeInfo.getChildGroup();
 
 			// Paths 설정
 			paths.putIfAbsent( url, new LinkedHashMap<>() );
@@ -137,7 +125,7 @@ public class SwaggerGenerator {
 			methodDetails.put( "summary", "API for " + routeInfo.getEndpoint() );
 			methodDetails.put( "description", "Generated endpoint for " + url );
 			// childGroup이 null인 경우 기본값 설정
-			methodDetails.put( "tags", List.of( routeInfo.getParentGroup() + "/" + routeInfo.getChildGroup() ) );
+			methodDetails.put( "tags", List.of( tagName ) );
 			methodDetails.put( "security", generateSecurity( routeInfo.getSecuritySchemes() ) );
 
 			// Request Body 설정
@@ -168,39 +156,28 @@ public class SwaggerGenerator {
 			((Map) paths.get( url )).put( httpMethod, methodDetails );
 
 			// Tags 생성
-			Map<String, Object> tag = Map
-				.of(
-					"name",
-					routeInfo.getParentGroup() + "/" + routeInfo.getChildGroup(),
-					"description",
-					"API for " + routeInfo.getParentGroup() + "/" + routeInfo.getChildGroup()
-				);
-
-			if (tags.stream().noneMatch( t -> t.get( "name" ).equals( routeInfo.getChildGroup() ) )) {
+			if (tagNames.add( tagName )) {
+				Map<String, Object> tag = new LinkedHashMap<>();
+				tag.put( "name", tagName );
+				tag.put( "description", "API for " + tagName );
 				tags.add( tag );
 
 			}
 
 			// 그룹 계층 생성
 			// if (! routeInfo.getChildGroup().trim().isBlank()) {
-			groupHierarchy.computeIfAbsent( routeInfo.getParentGroup(), k -> new ArrayList<>() ).add( routeInfo.getParentGroup() + "/" + routeInfo.getChildGroup() );
+			groupHierarchy.computeIfAbsent( routeInfo.getParentGroup(), k -> new LinkedHashSet<>() ).add( tagName );
 
 			// }
 
 		} );
 
 		// x-tagGroups 생성
-		for (Map.Entry<String, List<String>> entry : groupHierarchy.entrySet()) {
-			tagGroups
-				.add(
-					Map
-						.of(
-							"name",
-							entry.getKey(),
-							"tags",
-							entry.getValue()
-						)
-				);
+		for (Map.Entry<String, Set<String>> entry : groupHierarchy.entrySet()) {
+			Map<String, Object> tagGroup = new LinkedHashMap<>();
+			tagGroup.put( "name", entry.getKey() );
+			tagGroup.put( "tags", new ArrayList<>( entry.getValue() ) );
+			tagGroups.add( tagGroup );
 
 		}
 
@@ -213,8 +190,7 @@ public class SwaggerGenerator {
 		swagger.put( "x-tagGroups", tagGroups );
 
 		// Swagger JSON 출력
-		JsonMapper objectMapper = JsonMapper.builder().findAndAddModules().build();
-		return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString( swagger );
+		return OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString( swagger );
 
 	}
 
@@ -229,7 +205,7 @@ public class SwaggerGenerator {
 		Map<String, Object> content = new LinkedHashMap<>();
 		requestBodyInfo.forEach( (className, info) -> {
 			String schemaName = className;
-			schemas.putIfAbsent( schemaName, buildSchema( info, schemas, customTypeMapper ) );
+			ensureSchema( schemaName, info, schemas, customTypeMapper );
 
 			content.put( "application/json", Map.of( "schema", Map.of( "$ref", "#/components/schemas/" + schemaName ) ) );
 
@@ -292,14 +268,7 @@ public class SwaggerGenerator {
 
 				if (isConcreteWrapperSchema( info )) {
 					String responseSchemaName = resolveSchemaName( info );
-
-					if (schemas.containsKey( responseSchemaName ) && schemas.get( responseSchemaName ) instanceof Map map) {
-						map.putAll( buildSchema( info, schemas, customTypeMapper ) );
-
-					} else {
-						schemas.putIfAbsent( responseSchemaName, buildSchema( info, schemas, customTypeMapper ) );
-
-					}
+					ensureSchema( responseSchemaName, info, schemas, customTypeMapper );
 
 				}
 
@@ -472,6 +441,18 @@ public class SwaggerGenerator {
 		}
 
 		return schema;
+
+	}
+
+	private static void ensureSchema(
+		String schemaName, HandlerInfo.Info info, Map<String, Object> schemas, BiPredicate<Class<?>, Map<String, Object>> customTypeMapper
+	) {
+
+		if (schemas.containsKey( schemaName )) { return; }
+
+		Map<String, Object> schema = new LinkedHashMap<>();
+		schemas.put( schemaName, schema );
+		schema.putAll( buildSchema( info, schemas, customTypeMapper ) );
 
 	}
 
@@ -652,14 +633,7 @@ public class SwaggerGenerator {
 		if (RouteUtil.isPojo( type )) {
 			String schemaName = resolveSchemaName( info );
 			typeStr = "#/components/schemas/" + schemaName;
-
-			if (schemas.containsKey( schemaName ) && schemas.get( schemaName ) instanceof Map map) {
-				map.putAll( buildSchema( info, schemas, customTypeMapper ) );
-
-			} else {
-				schemas.putIfAbsent( schemaName, buildSchema( info, schemas, customTypeMapper ) );
-
-			}
+			ensureSchema( schemaName, info, schemas, customTypeMapper );
 
 		}
 

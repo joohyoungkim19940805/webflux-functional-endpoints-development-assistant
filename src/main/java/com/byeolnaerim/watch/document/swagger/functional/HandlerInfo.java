@@ -2,7 +2,7 @@ package com.byeolnaerim.watch.document.swagger.functional;
 
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import com.byeolnaerim.watch.document.common.TypeInfo;
@@ -17,26 +17,26 @@ import spoon.reflect.reference.CtTypeReference;
 public class HandlerInfo {
 
 	// Request Body 관련 정보: request body로 매핑될 클래스 이름 -> 해당 클래스의 필드 정보를 맵핑한 Map
-	private Map<String, Info> requestBodyInfo = new HashMap<>();
+	private Map<String, Info> requestBodyInfo = new LinkedHashMap<>();
 
 	// Query String 정보: 쿼리 파라미터 이름 -> 타입 및 디폴트 값, nullable 여부 등
-	private Map<String, Info> queryStringInfo = new HashMap<>();
+	private Map<String, Info> queryStringInfo = new LinkedHashMap<>();
 
 	// Path Variable 정보: path variable 이름 -> 타입 등 정보
-	private Map<String, Info> pathVariableInfo = new HashMap<>();
+	private Map<String, Info> pathVariableInfo = new LinkedHashMap<>();
 
 	// Response Body 정보: response에 매핑될 타입이나 필드 정보
-	private Map<String, Info> responseBodyInfo = new HashMap<>();
+	private Map<String, Info> responseBodyInfo = new LinkedHashMap<>();
 
 	// HTTP status code -> response body 정보. body가 없는 응답(noContent 등)은 value가 null이다.
-	private Map<String, Info> responseInfoByStatusCode = new HashMap<>();
+	private Map<String, Info> responseInfoByStatusCode = new LinkedHashMap<>();
 
 	// produces
 	private List<String> contentMediaTypes = new ArrayList<>();
 
-	private Map<String, Info> headerParams = new HashMap<>();
+	private Map<String, Info> headerParams = new LinkedHashMap<>();
 
-	private Map<String, Info> cookieParams = new HashMap<>();
+	private Map<String, Info> cookieParams = new LinkedHashMap<>();
 
 	// ===== Getter / Setter =====
 
@@ -117,7 +117,7 @@ public class HandlerInfo {
 
 		private List<Info> genericTypes = new ArrayList<>();
 
-		private Map<String, Info> fields = new HashMap<>();
+		private Map<String, Info> fields = new LinkedHashMap<>();
 
 		private LayerPosition position;
 

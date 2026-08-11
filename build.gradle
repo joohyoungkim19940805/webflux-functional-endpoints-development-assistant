@@ -6,7 +6,7 @@ plugins {
 }
 
 group = 'com.byeolnaerim'
-version = '0.0.2-alpha.1'
+version = '0.0.2-alpha.2'
 jar {
     archiveBaseName = 'webflux-fe-dev-assistant'
 }

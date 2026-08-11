@@ -43,7 +43,10 @@ public final class JarSourceDecompiler {
 		String baseName = stripExtension( fileName );
 		String hash = Integer.toHexString( jar.toString().hashCode() );
 		String dirName = (baseName + "-" + hash).replaceAll( "[^a-zA-Z0-9._-]", "_" );
-		Path outputDir = Paths.get( "build", "spoon-decompiled", dirName ).toAbsolutePath().normalize();
+		Path outputDir = Paths
+			.get( System.getProperty( "java.io.tmpdir" ), "webflux-fe-dev-assistant", "spoon-decompiled", dirName )
+			.toAbsolutePath()
+			.normalize();
 		Path completeMarker = outputDir.resolve( ".decompile-complete" );
 		Object lock = DECOMPILE_LOCKS.computeIfAbsent( outputDir, ignored -> new Object() );
 

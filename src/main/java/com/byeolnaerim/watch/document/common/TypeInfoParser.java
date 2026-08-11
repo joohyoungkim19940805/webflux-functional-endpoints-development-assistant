@@ -3,6 +3,7 @@ package com.byeolnaerim.watch.document.common;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +35,8 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 
 	private final Set<String> visitedTypes = new HashSet<>();
 
+	private final Map<String, T> infoCache = new HashMap<>();
+
 	protected TypeInfoParser() {
 
 		this( Map.of() );
@@ -53,6 +56,14 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 	) {
 
 		CtTypeReference<?> typeRef = resolveSourceBackedTypeReference( rawTypeRef, externalTypes );
+		String cacheKey = buildCacheKey( typeRef );
+		T cached = infoCache.get( cacheKey );
+
+		if (cached != null) {
+			return copyInfo( cached );
+
+		}
+
 		T info = createInfo();
 		info.setTypeRef( typeRef );
 		info.setType( loadClassFromTypeReference( typeRef ) );
@@ -81,6 +92,7 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 
 		}
 
+		infoCache.put( cacheKey, copyInfo( info ) );
 		return info;
 
 	}
@@ -133,6 +145,10 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 	}
 
 	protected abstract T createInfo();
+
+	protected abstract T copyInfo(
+		T source
+	);
 
 	protected void initializeInfo(
 		T info
@@ -238,7 +254,7 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 
 		CtTypeReference<?> typeRef = resolveSourceBackedTypeReference( info.getTypeRef(), externalTypes );
 
-		if (typeRef != null && shouldParseFields( typeRef, info.getType(), externalTypes )) {
+		if (typeRef != null && info.getFields().isEmpty() && shouldParseFields( typeRef, info.getType(), externalTypes )) {
 			parseFields( typeRef, info );
 
 		}
@@ -254,7 +270,7 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 			markGeneric( genericInfo );
 			CtTypeReference<?> genericTypeRef = resolveSourceBackedTypeReference( genericInfo.getTypeRef(), externalTypes );
 
-			if (genericTypeRef != null && shouldParseFields( genericTypeRef, genericInfo.getType(), externalTypes )) {
+			if (genericTypeRef != null && genericInfo.getFields().isEmpty() && shouldParseFields( genericTypeRef, genericInfo.getType(), externalTypes )) {
 				parseFields( genericTypeRef, genericInfo );
 
 			}
@@ -307,6 +323,26 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 		}
 
 		return fieldType;
+
+	}
+
+	private String buildCacheKey(
+		CtTypeReference<?> typeRef
+	) {
+
+		if (typeRef == null) {
+			return "<null>";
+
+		}
+
+		List<CtTypeReference<?>> actualTypeArguments = typeRef.getActualTypeArguments();
+
+		if (actualTypeArguments == null || actualTypeArguments.isEmpty()) {
+			return typeRef.getQualifiedName();
+
+		}
+
+		return typeRef.getQualifiedName() + "<" + actualTypeArguments.stream().map( this::buildCacheKey ).collect( Collectors.joining( "," ) ) + ">";
 
 	}
 
