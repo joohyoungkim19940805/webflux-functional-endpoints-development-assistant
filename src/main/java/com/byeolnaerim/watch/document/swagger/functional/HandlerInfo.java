@@ -38,6 +38,10 @@ public class HandlerInfo {
 
 	private Map<String, Info> cookieParams = new LinkedHashMap<>();
 
+	private String operationSummary;
+
+	private String operationDescription;
+
 	// ===== Getter / Setter =====
 
 	public Map<String, Info> getRequestBodyInfo() { return requestBodyInfo; }
@@ -88,10 +92,22 @@ public class HandlerInfo {
 		Map<String, Info> cookieParams
 	) { this.cookieParams = cookieParams; }
 
+	public String getOperationSummary() { return operationSummary; }
+
+	public void setOperationSummary(
+		String operationSummary
+	) { this.operationSummary = operationSummary; }
+
+	public String getOperationDescription() { return operationDescription; }
+
+	public void setOperationDescription(
+		String operationDescription
+	) { this.operationDescription = operationDescription; }
+
 	@Override
 	public String toString() {
 
-		return "HandlerInfo{" + "requestBodyInfo=" + requestBodyInfo + ", queryStringInfo=" + queryStringInfo + ", pathVariableInfo=" + pathVariableInfo + ", responseBodyInfo=" + responseBodyInfo + ", responseInfoByStatusCode=" + responseInfoByStatusCode + ", contentMediaTypes=" + contentMediaTypes + ", headerParams=" + headerParams + ", cookieParams=" + cookieParams + '}';
+		return "HandlerInfo{" + "requestBodyInfo=" + requestBodyInfo + ", queryStringInfo=" + queryStringInfo + ", pathVariableInfo=" + pathVariableInfo + ", responseBodyInfo=" + responseBodyInfo + ", responseInfoByStatusCode=" + responseInfoByStatusCode + ", contentMediaTypes=" + contentMediaTypes + ", headerParams=" + headerParams + ", cookieParams=" + cookieParams + ", operationSummary='" + operationSummary + '\'' + ", operationDescription='" + operationDescription + '\'' + '}';
 
 	}
 

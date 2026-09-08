@@ -3,20 +3,24 @@ package com.byeolnaerim.watch.document.swagger.functional;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.http.MediaType;
 import com.byeolnaerim.watch.RouteUtil;
+import com.byeolnaerim.watch.document.annotation.SelectedRequestBody;
 import com.byeolnaerim.watch.document.annotation.SelectedRequestParam;
 import com.byeolnaerim.watch.document.annotation.SelectedRequestPath;
 import com.byeolnaerim.watch.document.annotation.SelectedResponseBody;
 import com.byeolnaerim.watch.document.common.HandlerTypeInfoParser;
+import com.byeolnaerim.watch.document.common.SourceDocumentationUtil;
 import com.byeolnaerim.watch.document.common.TypeInfoParser;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo.LayerPosition;
 import reactor.core.publisher.Flux;
@@ -44,6 +48,7 @@ import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.declaration.CtType;
 import spoon.reflect.declaration.CtVariable;
 import spoon.reflect.factory.Factory;
+import spoon.reflect.reference.CtArrayTypeReference;
 import spoon.reflect.reference.CtExecutableReference;
 import spoon.reflect.reference.CtFieldReference;
 import spoon.reflect.reference.CtTypeParameterReference;
@@ -96,6 +101,8 @@ public class HandlerParser {
 
 	private Set<CtInvocation<?>> analyzedInvocations = Collections.newSetFromMap( new IdentityHashMap<>() );
 
+	private boolean hasRequestBodyAnnotationOverride = false;
+
 	private boolean hasResponseBodyAnnotationOverride = false;
 
 	/**
@@ -118,6 +125,7 @@ public class HandlerParser {
 		processingMethods.clear();
 		parsedMethods.clear();
 		analyzedInvocations.clear();
+		hasRequestBodyAnnotationOverride = false;
 		hasResponseBodyAnnotationOverride = false;
 		HandlerInfo handlerInfo = new HandlerInfo();
 
@@ -272,6 +280,7 @@ public class HandlerParser {
 		}
 
 		if (executableRef.getDeclaration() instanceof CtMethod<?> method) {
+			applyOperationDocumentation( method, handlerInfo );
 			parseMethodBody( method, handlerInfo, routeName );
 			return;
 
@@ -287,9 +296,104 @@ public class HandlerParser {
 
 			// 여기서는 매칭되는 첫 번째 메서드를 사용
 			if (! candidates.isEmpty()) {
+				applyOperationDocumentation( candidates.get( 0 ), handlerInfo );
 				parseMethodBody( candidates.get( 0 ), handlerInfo, routeName );
 
 			}
+
+		}
+
+	}
+
+	private void applyRequestBodyAnnotation(
+		CtMethod<?> method, HandlerInfo handlerInfo
+	) {
+
+		if (method == null || handlerInfo == null || hasRequestBodyAnnotationOverride) {
+			return;
+
+		}
+
+		CtAnnotation<?> ann = method.getAnnotation( method.getFactory().Type().createReference( SelectedRequestBody.class ) );
+
+		if (ann == null) {
+			return;
+
+		}
+
+		CtTypeReference<?> typeRef = resolveSelectedRequestBodyTypeReference( ann );
+
+		if (typeRef == null) {
+			return;
+
+		}
+
+		HandlerInfo.Info info = buildParamInfoFromTypeRef( typeRef );
+		info.setPosition( LayerPosition.REQUEST_BODY );
+
+		if (info.getFields().isEmpty()) {
+			parseClassFields( typeRef, info );
+
+		}
+
+		hasRequestBodyAnnotationOverride = true;
+		handlerInfo.getRequestBodyInfo().clear();
+
+		String key = (info.getType() != null && info.getType() != Object.class)
+			? info.getType().getSimpleName()
+			: typeRef.getSimpleName();
+
+		handlerInfo.getRequestBodyInfo().put( key, info );
+
+	}
+
+	private CtTypeReference<?> resolveSelectedRequestBodyTypeReference(
+		CtAnnotation<?> ann
+	) {
+
+		CtExpression<?> valueExpr = ann.getValue( "value" );
+
+		if (valueExpr instanceof CtFieldAccess<?> fieldAccess
+			&& "class".equals( fieldAccess.getVariable().getSimpleName() )
+			&& fieldAccess.getTarget() instanceof CtTypeAccess<?> typeAccess) {
+			return resolveSourceBackedTypeReference( typeAccess.getAccessedType() );
+
+		}
+
+		if (valueExpr != null) {
+			return valueExpr
+				.getReferencedTypes()
+				.stream()
+				.filter( typeRef -> ! "java.lang.Class".equals( typeRef.getQualifiedName() ) )
+				.map( this::resolveSourceBackedTypeReference )
+				.findFirst()
+				.orElse( null );
+
+		}
+
+		return null;
+
+	}
+
+	private void applyOperationDocumentation(
+		CtMethod<?> method, HandlerInfo handlerInfo
+	) {
+
+		if (method == null || handlerInfo == null) {
+			return;
+
+		}
+
+		String summary = SourceDocumentationUtil.summary( method );
+		String description = SourceDocumentationUtil.operationDescription( method );
+
+		if ((handlerInfo.getOperationSummary() == null || handlerInfo.getOperationSummary().isBlank()) && summary != null && ! summary.isBlank()) {
+			handlerInfo.setOperationSummary( summary );
+
+		}
+
+		if ((handlerInfo.getOperationDescription() == null || handlerInfo.getOperationDescription().isBlank()) && description != null && ! description.isBlank()) {
+			handlerInfo.setOperationDescription( description );
 
 		}
 
@@ -341,7 +445,14 @@ public class HandlerParser {
 		CtMethod<?> method, HandlerInfo handlerInfo, String routeName
 	) {
 
-		if (method == null || method.getBody() == null) {
+		if (method == null) {
+			return;
+
+		}
+
+		applyRequestBodyAnnotation( method, handlerInfo );
+
+		if (method.getBody() == null) {
 			return;
 
 		}
@@ -469,6 +580,7 @@ public class HandlerParser {
 				&& (execRef.getParameters().stream().anyMatch( p -> p != null && "ServerRequest".equals( p.getSimpleName() ) )
 					|| inv.getArguments().stream().anyMatch( arg -> arg.getType() != null && "ServerRequest".equals( arg.getType().getSimpleName() ) ))) {
 				if (execRef.getDeclaration() instanceof CtMethod<?> method) {
+					applyOperationDocumentation( method, handlerInfo );
 					parseMethodBody( method, handlerInfo, routeName );
 
 				} else {
@@ -482,6 +594,7 @@ public class HandlerParser {
 								.getParameters()
 								.stream()
 								.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) )) {
+								applyOperationDocumentation( candidate, handlerInfo );
 								parseMethodBody( candidate, handlerInfo, routeName );
 
 							}
@@ -633,6 +746,13 @@ public class HandlerParser {
 
 		String name = inv.getExecutable().getSimpleName();
 
+		CtAnnotation<?> responseHelperAnnotation = findResponseBodyOnInvokedMethod( inv );
+
+		if (responseHelperAnnotation != null && isServerResponseHelperInvocation( inv )) {
+			parseResponseBodyFromAnnotatedHelper( inv, responseHelperAnnotation, handlerInfo );
+
+		}
+
 		// get/getFirst/getOrDefault만 queryParams/pathVariables 계열 후보다.
 		// 모든 invocation에서 target.toString()/type resolution을 반복하지 않는다.
 		switch (name) {
@@ -697,7 +817,7 @@ public class HandlerParser {
 			case "pathVariable" -> {
 				if (isTargetRequest( inv )) {
 					String key = extractStringArgument( inv, 0 );
-					addParamInfo( handlerInfo, key, key, inv, LayerPosition.REQUEST_PATH );
+					addParamInfo( handlerInfo, key, null, inv, LayerPosition.REQUEST_PATH );
 
 				}
 
@@ -707,10 +827,9 @@ public class HandlerParser {
 		}
 
 		boolean isBodyToXCall = (name.equals( "bodyToMono" ) || name.equals( "bodyToFlux" )) && isTargetRequest( inv );
-		boolean isValidateSignatureAndParseBodyCall = name.equals( "validateSignatureAndParseBody" ) && inv.getArguments().size() > 1;
 
-		if (isBodyToXCall || isValidateSignatureAndParseBodyCall) {
-			int targetIndex = isBodyToXCall ? 0 : 1;
+		if (isBodyToXCall && ! hasRequestBodyAnnotationOverride) {
+			int targetIndex = 0;
 			CtExpression<?> arg = inv.getArguments().get( targetIndex );
 			Class<?> bodyClass = extractClassArgument( inv, targetIndex );
 			CtTypeReference<?> bodyClassRef = extractTypeRefArgument( inv, targetIndex );
@@ -766,6 +885,33 @@ public class HandlerParser {
 
 	}
 
+	private boolean isServerResponseHelperInvocation(
+		CtInvocation<?> inv
+	) {
+
+		return containsServerResponseType( inv != null ? inv.getType() : null );
+
+	}
+
+	private boolean containsServerResponseType(
+		CtTypeReference<?> typeRef
+	) {
+
+		if (typeRef == null) {
+			return false;
+
+		}
+
+		if ("ServerResponse".equals( typeRef.getSimpleName() )) {
+			return true;
+
+		}
+
+		return typeRef.getActualTypeArguments() != null
+			&& typeRef.getActualTypeArguments().stream().anyMatch( this::containsServerResponseType );
+
+	}
+
 	private void addParamInfo(
 		HandlerInfo handlerInfo, String key, CtInvocation<?> inv, LayerPosition position
 	) {
@@ -778,16 +924,27 @@ public class HandlerParser {
 		HandlerInfo handlerInfo, String key, String defaultValue, CtInvocation<?> inv, LayerPosition position
 	) {
 
-		CtLocalVariable<?> variable = determineFinalAssignedType( inv );
-		CtTypeReference<?> finalTypeRef = variable == null ? inv.getType() : variable.getType();
-		// Class<?> finalType = loadClassFromTypeReference( finalTypeRef );
+		CtLocalVariable<?> variable = determineRequestParameterVariable( inv );
+		CtTypeReference<?> finalTypeRef = determineRequestParameterType( inv );
 		HandlerInfo.Info pInfo = buildParamInfoFromTypeRef( finalTypeRef );
 		pInfo.setName( key );
 		pInfo.setDefaultValue( defaultValue );
-		pInfo.setRequired( defaultValue != null && ! defaultValue.isBlank() );
+		pInfo.setRequired( position == LayerPosition.REQUEST_PATH || isRequiredRequestParameter( inv ) );
+		pInfo.setNullable( position != LayerPosition.REQUEST_PATH && isNullableRequestParameter( inv ) );
 		pInfo.setPosition( position );
-		// pInfo.setType( finalType );
+
+		if (variable != null) {
+			pInfo.setDescription( SourceDocumentationUtil.description( variable ) );
+
+		}
+
 		applyAnnotationsToParamInfo( variable, pInfo );
+
+		if (pInfo.getPosition() == LayerPosition.REQUEST_PATH) {
+			pInfo.setRequired( Boolean.TRUE );
+			pInfo.setNullable( Boolean.FALSE );
+
+		}
 
 		if (pInfo.getPosition().equals( LayerPosition.REQUEST_STRING )) {
 			handlerInfo.getQueryStringInfo().put( pInfo.getName(), pInfo );
@@ -800,34 +957,431 @@ public class HandlerParser {
 	}
 
 	/**
-	 * inv: request.queryParam("accountName") 같은 CtInvocation
-	 * 최종적으로 이 inv 결과가 대입되는 로컬 변수(예: Integer aaa = ...)를 찾아 해당 로컬 변수 타입 반환
+	 * request query/path expression 자체의 타입에서 시작해 Optional/Collection 체인과
+	 * 명시적인 변환 메서드까지만 따라간다. 바깥 service 결과 타입은 입력 파라미터 타입으로
+	 * 승격하지 않는다.
 	 */
-	private CtLocalVariable<?> determineFinalAssignedType(
+	private CtTypeReference<?> determineRequestParameterType(
 		CtInvocation<?> inv
 	) {
 
+		CtTypeReference<?> result = resolveSourceBackedTypeReference( inv.getType() );
 		CtElement current = inv;
 
 		while (current != null) {
+			CtElement parent = current.getParent();
 
-			if (current instanceof CtLocalVariable<?> lv) {
-				// lv.getType()가 최종 타입
-				return lv;
+			if (parent instanceof CtLocalVariable<?> localVariable) {
+				CtTypeReference<?> assignedType = resolveSourceBackedTypeReference( localVariable.getType() );
 
-			} else if (current instanceof CtAssignment<?, ?> assign
-				// 대입문의 경우 대입 대상 변수 타입 확인
+				if (isSupportedRequestParameterType( assignedType )) {
+					result = assignedType;
+
+				}
+
+				break;
+
+			}
+
+			if (parent instanceof CtAssignment<?, ?> assign
 				&& assign.getAssigned() instanceof CtVariableWrite<?> varWrite
-				// varWrite.getVariable()에서 선언된 변수 찾아 타입 확인
-				&& varWrite.getVariable().getDeclaration() instanceof CtLocalVariable<?> localVar) { return localVar; }
+				&& varWrite.getVariable().getDeclaration() instanceof CtLocalVariable<?> localVariable) {
+				CtTypeReference<?> assignedType = resolveSourceBackedTypeReference( localVariable.getType() );
+
+				if (isSupportedRequestParameterType( assignedType )) {
+					result = assignedType;
+
+				}
+
+				break;
+
+			}
+
+			if (! (parent instanceof CtInvocation<?> parentInv)) {
+				break;
+
+			}
+
+			CtTypeReference<?> candidate = resolveSourceBackedTypeReference( parentInv.getType() );
+
+			if (! isRequestParameterTransformation( parentInv, current, result, candidate )) {
+				break;
+
+			}
+
+			result = candidate;
+			current = parentInv;
+
+		}
+
+		return unwrapOptionalRequestParameterType( result != null ? result : inv.getType() );
+
+	}
+
+	private CtTypeReference<?> unwrapOptionalRequestParameterType(
+		CtTypeReference<?> typeRef
+	) {
+
+		typeRef = resolveSourceBackedTypeReference( typeRef );
+
+		while (isOptionalType( typeRef )
+			&& typeRef.getActualTypeArguments() != null
+			&& ! typeRef.getActualTypeArguments().isEmpty()) {
+			typeRef = resolveSourceBackedTypeReference( typeRef.getActualTypeArguments().get( 0 ) );
+
+		}
+
+		return typeRef;
+
+	}
+
+	private CtLocalVariable<?> determineRequestParameterVariable(
+		CtInvocation<?> inv
+	) {
+
+		CtTypeReference<?> result = resolveSourceBackedTypeReference( inv.getType() );
+		CtElement current = inv;
+
+		while (current != null) {
+			CtElement parent = current.getParent();
+
+			if (parent instanceof CtLocalVariable<?> localVariable) {
+				return localVariable;
+
+			}
+
+			if (parent instanceof CtAssignment<?, ?> assign
+				&& assign.getAssigned() instanceof CtVariableWrite<?> varWrite
+				&& varWrite.getVariable().getDeclaration() instanceof CtLocalVariable<?> localVariable) {
+				return localVariable;
+
+			}
+
+			if (! (parent instanceof CtInvocation<?> parentInv)) {
+				break;
+
+			}
+
+			CtTypeReference<?> candidate = resolveSourceBackedTypeReference( parentInv.getType() );
+
+			if (! isRequestParameterTransformation( parentInv, current, result, candidate )) {
+				break;
+
+			}
+
+			result = candidate;
+			current = parentInv;
+
+		}
+
+		return null;
+
+	}
+
+	private boolean isRequestParameterTransformation(
+		CtInvocation<?> invocation,
+		CtElement source,
+		CtTypeReference<?> sourceType,
+		CtTypeReference<?> resultType
+	) {
+
+		if (invocation == null || invocation.getExecutable() == null || ! isSupportedRequestParameterType( resultType )) {
+			return false;
+
+		}
+
+		String methodName = invocation.getExecutable().getSimpleName();
+
+		if (invocation.getTarget() == source) {
+			if (isOptionalType( sourceType )) {
+				return Set.of( "get", "or", "orElse", "orElseGet", "orElseThrow", "map", "flatMap", "filter" ).contains( methodName );
+
+			}
+
+			if (isCollectionType( sourceType )) {
+				return "get".equals( methodName );
+
+			}
+
+			return isSameRequestParameterType( sourceType, resultType )
+				&& Set.of( "trim", "strip", "stripLeading", "stripTrailing", "toLowerCase", "toUpperCase" ).contains( methodName );
+
+		}
+
+		if (! invocation.getArguments().contains( source )) {
+			return false;
+
+		}
+
+		if ("requireNonNull".equals( methodName )) {
+			return true;
+
+		}
+
+		boolean converterName = methodName.startsWith( "parse" )
+			|| methodName.startsWith( "convert" )
+			|| methodName.startsWith( "to" )
+			|| methodName.startsWith( "from" )
+			|| "valueOf".equals( methodName );
+
+		if (invocation.getTarget() instanceof CtTypeAccess<?>) {
+			return converterName || isRequestParameterEnumType( resultType );
+
+		}
+
+		CtMethod<?> declaration = invocation.getExecutable().getDeclaration() instanceof CtMethod<?> method ? method : null;
+		CtType<?> enclosingType = findEnclosingType( source );
+
+		if (declaration != null && declaration.getDeclaringType() != null && enclosingType != null
+			&& declaration.getDeclaringType().getQualifiedName().equals( enclosingType.getQualifiedName() )) {
+			return converterName || isRequestParameterEnumType( resultType );
+
+		}
+
+		return converterName;
+
+	}
+
+	private boolean isSupportedRequestParameterType(
+		CtTypeReference<?> typeRef
+	) {
+
+		typeRef = resolveSourceBackedTypeReference( typeRef );
+
+		if (typeRef == null) {
+			return false;
+
+		}
+
+		if (typeRef instanceof CtArrayTypeReference<?> arrayTypeReference) {
+			return isSupportedRequestParameterType( arrayTypeReference.getComponentType() );
+
+		}
+
+		if (isRequestParameterEnumType( typeRef )) {
+			return true;
+
+		}
+
+		Class<?> type = loadClassFromTypeReference( typeRef );
+
+		if (type != null && type != Object.class) {
+			if (type.isArray()) {
+				return isSupportedRequestParameterClass( type.getComponentType() );
+
+			}
+
+			if (Collection.class.isAssignableFrom( type ) || Optional.class.isAssignableFrom( type )) {
+				return ! typeRef.getActualTypeArguments().isEmpty()
+					&& isSupportedRequestParameterType( typeRef.getActualTypeArguments().get( 0 ) );
+
+			}
+
+			return isSupportedRequestParameterClass( type );
+
+		}
+
+		return typeRef.getSimpleName() != null && typeRef.getSimpleName().contains( "ObjectId" );
+
+	}
+
+	private boolean isSupportedRequestParameterClass(
+		Class<?> type
+	) {
+
+		return type == String.class
+			|| type == boolean.class || type == Boolean.class
+			|| type == byte.class || type == Byte.class
+			|| type == short.class || type == Short.class
+			|| type == int.class || type == Integer.class
+			|| type == long.class || type == Long.class
+			|| type == float.class || type == Float.class
+			|| type == double.class || type == Double.class
+			|| type == java.math.BigDecimal.class
+			|| type == java.math.BigInteger.class
+			|| type == java.time.LocalDate.class
+			|| type == java.time.LocalDateTime.class
+			|| type == java.time.LocalTime.class
+			|| type == java.time.Instant.class
+			|| type == java.time.OffsetDateTime.class
+			|| type == java.time.ZonedDateTime.class
+			|| type == java.util.Date.class
+			|| type == java.util.UUID.class
+			|| type.isEnum()
+			|| type.getSimpleName().contains( "ObjectId" );
+
+	}
+
+	private boolean isRequestParameterEnumType(
+		CtTypeReference<?> typeRef
+	) {
+
+		if (typeRef == null) {
+			return false;
+
+		}
+
+		Class<?> type = loadClassFromTypeReference( typeRef );
+
+		if (type != null && type != Object.class && type.isEnum()) {
+			return true;
+
+		}
+
+		return resolveSourceBackedType( typeRef ) instanceof spoon.reflect.declaration.CtEnum<?>;
+
+	}
+
+	private boolean isOptionalType(
+		CtTypeReference<?> typeRef
+	) {
+
+		return typeRef != null && ("java.util.Optional".equals( typeRef.getQualifiedName() ) || "Optional".equals( typeRef.getSimpleName() ));
+
+	}
+
+	private boolean isCollectionType(
+		CtTypeReference<?> typeRef
+	) {
+
+		if (typeRef == null) {
+			return false;
+
+		}
+
+		Class<?> type = loadClassFromTypeReference( typeRef );
+		return type != null && type != Object.class && Collection.class.isAssignableFrom( type );
+
+	}
+
+	private boolean isSameRequestParameterType(
+		CtTypeReference<?> left, CtTypeReference<?> right
+	) {
+
+		left = resolveSourceBackedTypeReference( left );
+		right = resolveSourceBackedTypeReference( right );
+
+		return left != null && right != null && left.getQualifiedName() != null && left.getQualifiedName().equals( right.getQualifiedName() );
+
+	}
+
+	private CtType<?> findEnclosingType(
+		CtElement element
+	) {
+
+		CtElement current = element;
+
+		while (current != null) {
+			if (current instanceof CtType<?> type) {
+				return type;
+
+			}
 
 			current = current.getParent();
 
 		}
 
-		// 로컬 변수나 대입문의 상위 구조를 못찾으면 invocation 자체의 리턴 타입 사용
 		return null;
-		// return inv.getType();
+
+	}
+
+	private boolean isRequiredRequestParameter(
+		CtInvocation<?> inv
+	) {
+
+		CtElement current = inv;
+		CtTypeReference<?> currentType = resolveSourceBackedTypeReference( inv.getType() );
+
+		while (current != null) {
+			CtElement parent = current.getParent();
+
+			if (! (parent instanceof CtInvocation<?> parentInv)) {
+				return false;
+
+			}
+
+			String methodName = parentInv.getExecutable() != null ? parentInv.getExecutable().getSimpleName() : "";
+
+			if (parentInv.getTarget() == current && isOptionalType( currentType )) {
+				if ("get".equals( methodName ) || "orElseThrow".equals( methodName )) {
+					return true;
+
+				}
+
+				if ("orElse".equals( methodName ) || "orElseGet".equals( methodName )) {
+					return false;
+
+				}
+
+			}
+
+			if (parentInv.getTarget() == current && isCollectionType( currentType ) && "get".equals( methodName )) {
+				return true;
+
+			}
+
+			if (parentInv.getArguments().contains( current ) && "requireNonNull".equals( methodName )) {
+				return true;
+
+			}
+
+			CtTypeReference<?> candidate = resolveSourceBackedTypeReference( parentInv.getType() );
+
+			if (! isRequestParameterTransformation( parentInv, current, currentType, candidate )) {
+				return false;
+
+			}
+
+			currentType = candidate;
+			current = parentInv;
+
+		}
+
+		return false;
+
+	}
+
+	private boolean isNullableRequestParameter(
+		CtInvocation<?> inv
+	) {
+
+		if (isRequiredRequestParameter( inv )) {
+			return false;
+
+		}
+
+		CtElement current = inv;
+		CtTypeReference<?> currentType = resolveSourceBackedTypeReference( inv.getType() );
+
+		while (current != null) {
+			CtElement parent = current.getParent();
+
+			if (! (parent instanceof CtInvocation<?> parentInv)) {
+				break;
+
+			}
+
+			String methodName = parentInv.getExecutable() != null ? parentInv.getExecutable().getSimpleName() : "";
+
+			if (parentInv.getTarget() == current && isOptionalType( currentType ) && "orElse".equals( methodName ) && ! parentInv.getArguments().isEmpty()) {
+				CtExpression<?> defaultExpression = parentInv.getArguments().get( 0 );
+				return defaultExpression instanceof CtLiteral<?> literal && literal.getValue() == null;
+
+			}
+
+			CtTypeReference<?> candidate = resolveSourceBackedTypeReference( parentInv.getType() );
+
+			if (! isRequestParameterTransformation( parentInv, current, currentType, candidate )) {
+				break;
+
+			}
+
+			currentType = candidate;
+			current = parentInv;
+
+		}
+
+		return true;
 
 	}
 
@@ -1019,24 +1573,6 @@ public class HandlerParser {
 	}
 
 
-	private boolean isBodyToXCall(
-		CtInvocation<?> inv
-	) {
-
-		// bodyToMono(Xxx.class), bodyToFlux(Xxx.class)
-		String name = inv.getExecutable().getSimpleName();
-		return (name.equals( "bodyToMono" ) || name.equals( "bodyToFlux" )) && isTargetRequest( inv );
-
-	}
-
-	private boolean isValidateSignatureAndParseBodyCall(
-		CtInvocation<?> inv
-	) {
-
-		// accountService.validateSignatureAndParseBody(request, Xxx.class)
-		return inv.getArguments().size() > 1 && inv.getExecutable().getSimpleName().equals( "validateSignatureAndParseBody" );
-
-	}
 
 	private boolean isResponseCallChain(
 		CtInvocation<?> inv
@@ -1122,32 +1658,29 @@ public class HandlerParser {
 		CtInvocation<?> inv
 	) {
 
-		// inv가 queryParam(...) 호출이라면 inv.getParent()나 inv.getTarget()를 추적하여 orElse 호출 검사
-		CtExpression<?> target = inv.getTarget();
-
-		if (target instanceof CtInvocation<?> parentInv) {
-
-			// parentInv가 orElse 호출인지 체크
-			if (isOrElseCall( parentInv )) {
-				// orElse(...)의 인자 추출
-				return extractStringArgument( parentInv, 0 );
-
-			}
-
-		}
-
-		// target이 orElse가 아닐 경우, 추가로 parent를 따라 올라가며 확인할 수도 있음
-		CtElement current = inv.getParent();
+		CtElement current = inv;
 
 		while (current != null) {
+			CtElement parent = current.getParent();
 
-			if (current instanceof CtInvocation<?> upInv) {
-
-				if (isOrElseCall( upInv )) { return extractStringArgument( upInv, 0 ); }
+			if (! (parent instanceof CtInvocation<?> parentInv) || parentInv.getTarget() != current) {
+				return null;
 
 			}
 
-			current = current.getParent();
+			if (isOrElseCall( parentInv )) {
+				CtExpression<?> argument = parentInv.getArguments().get( 0 );
+
+				if (argument instanceof CtLiteral<?> literal && literal.getValue() != null) {
+					return String.valueOf( literal.getValue() );
+
+				}
+
+				return null;
+
+			}
+
+			current = parentInv;
 
 		}
 
@@ -1451,7 +1984,7 @@ public class HandlerParser {
 					String key = (annotated.getType() != null && annotated.getType() != Object.class)
 						? annotated.getType().getSimpleName()
 						: (annotated.getTypeRef() != null ? annotated.getTypeRef().getSimpleName() : "Object");
-					handlerInfo.getResponseBodyInfo().put( key, annotated );
+					putResponseInfo( handlerInfo, inv, key, annotated );
 					return;
 
 				}
@@ -1737,18 +2270,22 @@ public class HandlerParser {
 
 		}
 
+		CtExpression<?> init = dataArgument;
 		CtVariable<?> varDecl = extractVariableDeclaration( dataArgument );
 
-		if (! (varDecl instanceof CtLocalVariable<?> localVar)) { return null; }
-
-		CtExpression<?> init = localVar.getDefaultExpression();
-
-		if (init == null) {
-			return null;
+		if (varDecl instanceof CtLocalVariable<?> localVar && localVar.getDefaultExpression() != null) {
+			init = localVar.getDefaultExpression();
 
 		}
 
-		List<CtInvocation<?>> nestedInvocations = init.getElements( new TypeFilter<>( CtInvocation.class ) );
+		List<CtInvocation<?>> nestedInvocations = new ArrayList<>();
+
+		if (init instanceof CtInvocation<?> initInvocation) {
+			nestedInvocations.add( initInvocation );
+
+		}
+
+		nestedInvocations.addAll( init.getElements( new TypeFilter<>( CtInvocation.class ) ) );
 		CtTypeReference<?> bestMatch = null;
 
 		for (int i = 0; i < nestedInvocations.size(); i++) {
@@ -1765,7 +2302,7 @@ public class HandlerParser {
 
 			}
 
-			if (nestedTypeRef.getActualTypeArguments() == null || nestedTypeRef.getActualTypeArguments().isEmpty()) {
+			if (! hasUsableTypeArgument( nestedTypeRef )) {
 				continue;
 
 			}
@@ -1797,7 +2334,7 @@ public class HandlerParser {
 		String qName = actualTypeRef.getQualifiedName();
 
 		if (("reactor.core.publisher.Mono".equals( qName ) || "reactor.core.publisher.Flux"
-			.equals( qName )) && (actualTypeRef.getActualTypeArguments() == null || actualTypeRef.getActualTypeArguments().isEmpty())) {
+			.equals( qName )) && ! hasUsableTypeArgument( actualTypeRef )) {
 
 			CtTypeReference<?> repairedTypeRef = tryInferRawReactorTypeFromVariableInitializer( argumentExpression, actualTypeRef );
 
@@ -1809,6 +2346,30 @@ public class HandlerParser {
 		}
 
 		return actualTypeRef;
+
+	}
+
+	private boolean hasUsableTypeArgument(
+		CtTypeReference<?> typeRef
+	) {
+
+		if (typeRef == null || typeRef.getActualTypeArguments() == null || typeRef.getActualTypeArguments().isEmpty()) {
+			return false;
+
+		}
+
+		CtTypeReference<?> argument = resolveSourceBackedTypeReference( typeRef.getActualTypeArguments().get( 0 ) );
+
+		if (argument == null || argument instanceof CtTypeParameterReference) {
+			return false;
+
+		}
+
+		String simpleName = argument.getSimpleName();
+		String qualifiedName = argument.getQualifiedName();
+
+		return simpleName != null && ! simpleName.startsWith( "?" ) && ! "Object".equals( simpleName )
+			&& ! "java.lang.Object".equals( qualifiedName );
 
 	}
 
@@ -2470,6 +3031,83 @@ public class HandlerParser {
 		}
 
 		return null;
+
+	}
+
+	private void parseResponseBodyFromAnnotatedHelper(
+		CtInvocation<?> inv, CtAnnotation<?> ann, HandlerInfo handlerInfo
+	) {
+
+		if (! (ann.getActualAnnotation() instanceof SelectedResponseBody rb)) {
+			return;
+
+		}
+
+		HandlerInfo.Info info = buildResponseBodyInfoFromAnnotation( ann, inv.getFactory() );
+
+		if (info == null && rb.parameterIndex() >= 0 && rb.parameterIndex() < inv.getArguments().size()) {
+			CtExpression<?> argument = inv.getArguments().get( rb.parameterIndex() );
+			CtTypeReference<?> argumentTypeRef = resolveActualArgumentTypeForGenericInference( argument );
+
+			if (argumentTypeRef == null) {
+				return;
+
+			}
+
+			HandlerInfo.Info payloadInfo = buildParamInfoFromTypeRef( argumentTypeRef );
+
+			if (payloadInfo.getType() != null && Mono.class.isAssignableFrom( payloadInfo.getType() ) && ! payloadInfo.getGenericTypes().isEmpty()) {
+				payloadInfo = payloadInfo.getGenericTypes().get( 0 );
+
+			}
+
+			Class<?> wrapperType = rb.wrapperType();
+
+			if (wrapperType != null && wrapperType != Void.class && wrapperType != void.class) {
+				CtTypeReference<?> wrapperTypeRef = inv.getFactory().Type().createReference( wrapperType );
+				CtTypeReference<?> payloadTypeRef = payloadInfo.getTypeRef();
+
+				if (payloadTypeRef == null && payloadInfo.getType() != null && payloadInfo.getType() != Object.class) {
+					payloadTypeRef = inv.getFactory().Type().createReference( payloadInfo.getType() );
+
+				}
+
+				if (payloadTypeRef != null) {
+					wrapperTypeRef.setActualTypeArguments( List.of( resolveSourceBackedTypeReference( payloadTypeRef ) ) );
+
+				}
+
+				info = buildParamInfoFromTypeRef( wrapperTypeRef );
+
+				if (info.getFields().isEmpty()) {
+					parseClassFields( wrapperTypeRef, info );
+
+				}
+
+			} else {
+				info = payloadInfo;
+
+			}
+
+			info.setNullable( rb.nullable() );
+			info.setPosition( LayerPosition.RESPONSE_BODY );
+
+		}
+
+		if (info == null) {
+			return;
+
+		}
+
+		hasResponseBodyAnnotationOverride = true;
+		handlerInfo.getResponseBodyInfo().clear();
+
+		String key = (info.getType() != null && info.getType() != Object.class)
+			? info.getType().getSimpleName()
+			: (info.getTypeRef() != null ? info.getTypeRef().getSimpleName() : "Object");
+
+		handlerInfo.getResponseBodyInfo().put( key, info );
+		handlerInfo.getResponseInfoByStatusCode().put( "200", info );
 
 	}
 

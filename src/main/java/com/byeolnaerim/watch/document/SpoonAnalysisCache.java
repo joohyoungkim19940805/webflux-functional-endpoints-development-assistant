@@ -254,7 +254,7 @@ public final class SpoonAnalysisCache {
 		Path sourceDir = JarSourceDecompiler.decompile( jarLocation.toString(), effectiveSourceClasspath );
 		String spoonVersion = Launcher.class.getPackage().getImplementationVersion();
 		Path modelCache = sourceDir
-			.resolve( ".spoon-model-" + (spoonVersion != null ? spoonVersion.replaceAll( "[^a-zA-Z0-9._-]", "_" ) : "dev") + ".bin" );
+			.resolve( ".spoon-model-comments-" + (spoonVersion != null ? spoonVersion.replaceAll( "[^a-zA-Z0-9._-]", "_" ) : "dev") + ".bin" );
 		CtModel model = null;
 
 		if (Files.isRegularFile( modelCache )) {
@@ -321,7 +321,7 @@ public final class SpoonAnalysisCache {
 		launcher.addInputResource( input.toString() );
 		launcher.getEnvironment().setAutoImports( true );
 		launcher.getEnvironment().setNoClasspath( true );
-		launcher.getEnvironment().setCommentEnabled( false );
+		launcher.getEnvironment().setCommentEnabled( true );
 
 		if (! effectiveSourceClasspath.isEmpty()) {
 			launcher.getEnvironment().setSourceClasspath( effectiveSourceClasspath.toArray( String[]::new ) );
