@@ -28,6 +28,7 @@ import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.code.CtInvocation;
 import spoon.reflect.declaration.CtMethod;
+import spoon.reflect.reference.CtArrayTypeReference;
 import spoon.reflect.visitor.filter.TypeFilter;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -122,8 +123,15 @@ public class SwaggerGenerator {
 			// Paths 설정
 			paths.putIfAbsent( url, new LinkedHashMap<>() );
 			Map<String, Object> methodDetails = new LinkedHashMap<>();
-			methodDetails.put( "summary", "API for " + routeInfo.getEndpoint() );
-			methodDetails.put( "description", "Generated endpoint for " + url );
+			String operationSummary = routeInfo.getHandlerInfo().getOperationSummary();
+			String operationDescription = routeInfo.getHandlerInfo().getOperationDescription();
+
+			methodDetails.put( "summary", operationSummary != null && ! operationSummary.isBlank() ? operationSummary : "API for " + routeInfo.getEndpoint() );
+
+			if (operationDescription != null && ! operationDescription.isBlank()) {
+				methodDetails.put( "description", operationDescription );
+
+			}
 			// childGroup이 null인 경우 기본값 설정
 			methodDetails.put( "tags", List.of( tagName ) );
 			methodDetails.put( "security", generateSecurity( routeInfo.getSecuritySchemes() ) );
@@ -231,7 +239,10 @@ public class SwaggerGenerator {
 			param.put( "required", info.getRequired() );
 			param.put( "schema", mapType( info, schemas, customTypeMapper ) );
 
-			param.put( "description", info.getDescription() );
+			if (info.getDescription() != null && ! info.getDescription().isBlank()) {
+				param.put( "description", info.getDescription() );
+
+			}
 
 			if (info.getDefaultValue() != null) {
 				param.put( "example", info.getDefaultValue() );
@@ -361,7 +372,7 @@ public class SwaggerGenerator {
 
 		Class<?> type = info.getType();
 
-		if (Flux.class.isAssignableFrom( type ) || List.class.isAssignableFrom( type )) {
+		if (Flux.class.isAssignableFrom( type ) || java.util.Collection.class.isAssignableFrom( type )) {
 
 			if (! info.getGenericTypes().isEmpty()) {
 				return "ListOf" + buildGenericSchemaSuffix( info.getGenericTypes().get( 0 ) );
@@ -416,7 +427,7 @@ public class SwaggerGenerator {
 			Map<String, Object> fieldTypeMap = mapType( fieldInfo, schemas, customTypeMapper );
 			Map<String, Object> property = new LinkedHashMap<>( fieldTypeMap );
 
-			if (fieldInfo.getDescription() != null) {
+			if (fieldInfo.getDescription() != null && ! fieldInfo.getDescription().isBlank()) {
 				property.put( "description", fieldInfo.getDescription() );
 
 			}
@@ -529,6 +540,22 @@ public class SwaggerGenerator {
 		if (type == byte[].class || type == Byte[].class) {
 			schema.put( "type", "string" );
 			schema.put( "format", "byte" );
+			return schema;
+
+		}
+
+		if (type.isArray()) {
+			schema.put( "type", "array" );
+
+			HandlerInfo.Info componentInfo = new HandlerInfo.Info();
+			componentInfo.setType( type.getComponentType() );
+
+			if (info.getTypeRef() instanceof CtArrayTypeReference<?> arrayTypeReference) {
+				componentInfo.setTypeRef( arrayTypeReference.getComponentType() );
+
+			}
+
+			schema.put( "items", mapType( componentInfo, schemas, customTypeMapper ) );
 			return schema;
 
 		}

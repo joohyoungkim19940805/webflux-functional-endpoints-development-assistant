@@ -32,4 +32,19 @@ public @interface SelectedResponseBody {
 	 */
 	Class<?> type() default Void.class;
 
+	/**
+	 * Returns the invocation argument index whose type should be used as the response payload.
+	 * This is useful for reusable response helpers such as {@code json(result)}.
+	 *
+	 * @return zero-based argument index, or {@code -1} when no argument should be inferred
+	 */
+	int parameterIndex() default -1;
+
+	/**
+	 * Returns an optional response wrapper type applied around the inferred payload.
+	 *
+	 * @return wrapper type, or {@link Void} when the payload itself is the documented response
+	 */
+	Class<?> wrapperType() default Void.class;
+
 }

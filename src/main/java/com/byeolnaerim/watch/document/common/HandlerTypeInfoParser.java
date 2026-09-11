@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo;
 import com.byeolnaerim.watch.document.swagger.functional.HandlerInfo.LayerPosition;
+import spoon.reflect.declaration.CtElement;
 import spoon.reflect.declaration.CtType;
 
 
@@ -88,6 +89,15 @@ public final class HandlerTypeInfoParser extends TypeInfoParser<HandlerInfo.Info
 	) {
 
 		info.setPosition( LayerPosition.FIELDS );
+
+	}
+
+	@Override
+	protected void applyDocumentation(
+		CtElement element, HandlerInfo.Info info
+	) {
+
+		info.setDescription( SourceDocumentationUtil.description( element ) );
 
 	}
 

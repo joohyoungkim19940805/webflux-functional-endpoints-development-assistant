@@ -1,6 +1,7 @@
 package com.byeolnaerim.watch.document.common;
 
 
+import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -10,10 +11,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import com.byeolnaerim.watch.RouteUtil;
+import spoon.reflect.declaration.CtElement;
 import spoon.reflect.declaration.CtField;
 import spoon.reflect.declaration.CtRecord;
 import spoon.reflect.declaration.CtRecordComponent;
 import spoon.reflect.declaration.CtType;
+import spoon.reflect.reference.CtArrayTypeReference;
 import spoon.reflect.reference.CtFieldReference;
 import spoon.reflect.reference.CtTypeParameterReference;
 import spoon.reflect.reference.CtTypeReference;
@@ -162,6 +165,10 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 		T info
 	) {}
 
+	protected void applyDocumentation(
+		CtElement element, T info
+	) {}
+
 	private void parseRecordComponents(
 		CtTypeReference<?> ownerTypeRef, CtRecord record, T target
 	) {
@@ -175,6 +182,7 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 			T fieldInfo = buildInfo( fieldType );
 			fieldInfo.setName( fieldName );
 			markField( fieldInfo );
+			applyDocumentation( component, fieldInfo );
 			parseNestedTypeIfNeeded( fieldInfo );
 			target.addField( fieldName, fieldInfo );
 
@@ -194,7 +202,9 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 		if (fieldType == null || fieldType.getQualifiedName() == null) { return; }
 
 		if (isSelfReference( ownerTypeRef, fieldType )) {
-			target.addField( fieldName, buildPartialInfo( field.getReference(), fieldType ) );
+			T fieldInfo = buildPartialInfo( field.getReference(), fieldType );
+			applyDocumentation( field, fieldInfo );
+			target.addField( fieldName, fieldInfo );
 			return;
 
 		}
@@ -202,6 +212,7 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 		T fieldInfo = buildInfo( fieldType );
 		fieldInfo.setName( fieldName );
 		markField( fieldInfo );
+		applyDocumentation( field, fieldInfo );
 
 		Class<?> fieldClass = fieldInfo.getType();
 
@@ -472,6 +483,12 @@ public abstract class TypeInfoParser<T extends TypeInfo<T>> {
 	) {
 
 		if (typeRef == null) { return Object.class; }
+
+		if (typeRef instanceof CtArrayTypeReference<?> arrayTypeReference) {
+			Class<?> componentType = loadClassFromTypeReference( arrayTypeReference.getComponentType() );
+			return Array.newInstance( componentType, 0 ).getClass();
+
+		}
 
 		String qName = typeRef.getQualifiedName();
 
