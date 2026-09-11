@@ -31,21 +31,20 @@ repositories {
 
 dependencies {    
 	
-	implementation platform("org.springframework.boot:spring-boot-dependencies:4.0.0")
+	implementation platform("org.springframework.boot:spring-boot-dependencies:4.0.6")
 	
 	compileOnly 'org.springframework:spring-webflux'
 	compileOnly 'io.projectreactor:reactor-core'
 	
+	implementation platform('tools.jackson:jackson-bom:3.1.5')
 	implementation 'tools.jackson.core:jackson-databind'
 	
 	implementation 'com.github.javaparser:javaparser-core:3.28.0'
 	implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.28.0'
     
-    implementation 'fr.inria.gforge.spoon:spoon-core:11.3.1-beta-8'
+    implementation 'fr.inria.gforge.spoon:spoon-core:11.5.0'
     
     testImplementation 'org.junit.jupiter:junit-jupiter:6.0.1'
-    
-    compileOnly 'org.jspecify:jspecify:1.0.0'
     
     implementation 'org.benf:cfr:0.152'
 }
