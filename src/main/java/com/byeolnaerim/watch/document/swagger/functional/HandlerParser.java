@@ -957,62 +957,19 @@ public class HandlerParser {
 	}
 
 	/**
-	 * request query/path expression 자체의 타입에서 시작해 Optional/Collection 체인과
-	 * 명시적인 변환 메서드까지만 따라간다. 바깥 service 결과 타입은 입력 파라미터 타입으로
-	 * 승격하지 않는다.
+	 * request query/path expression이 최종적으로 대입되는 로컬 변수를 표현식 범위 안에서 추적한다.
+	 * 최종 변수 타입이 request parameter로 지원되는 Java 타입인 경우에만 해당 타입을 사용하고,
+	 * DTO 등 지원하지 않는 타입이면 원래 request expression 타입을 유지한다.
 	 */
 	private CtTypeReference<?> determineRequestParameterType(
 		CtInvocation<?> inv
 	) {
 
-		CtTypeReference<?> result = resolveSourceBackedTypeReference( inv.getType() );
-		CtElement current = inv;
-
-		while (current != null) {
-			CtElement parent = current.getParent();
-
-			if (parent instanceof CtLocalVariable<?> localVariable) {
-				CtTypeReference<?> assignedType = resolveSourceBackedTypeReference( localVariable.getType() );
-
-				if (isSupportedRequestParameterType( assignedType )) {
-					result = assignedType;
-
-				}
-
-				break;
-
-			}
-
-			if (parent instanceof CtAssignment<?, ?> assign
-				&& assign.getAssigned() instanceof CtVariableWrite<?> varWrite
-				&& varWrite.getVariable().getDeclaration() instanceof CtLocalVariable<?> localVariable) {
-				CtTypeReference<?> assignedType = resolveSourceBackedTypeReference( localVariable.getType() );
-
-				if (isSupportedRequestParameterType( assignedType )) {
-					result = assignedType;
-
-				}
-
-				break;
-
-			}
-
-			if (! (parent instanceof CtInvocation<?> parentInv)) {
-				break;
-
-			}
-
-			CtTypeReference<?> candidate = resolveSourceBackedTypeReference( parentInv.getType() );
-
-			if (! isRequestParameterTransformation( parentInv, current, result, candidate )) {
-				break;
-
-			}
-
-			result = candidate;
-			current = parentInv;
-
-		}
+		CtLocalVariable<?> variable = determineRequestParameterVariable( inv );
+		CtTypeReference<?> assignedType = variable == null ? null : resolveSourceBackedTypeReference( variable.getType() );
+		CtTypeReference<?> result = isSupportedRequestParameterType( assignedType )
+			? assignedType
+			: resolveSourceBackedTypeReference( inv.getType() );
 
 		return unwrapOptionalRequestParameterType( result != null ? result : inv.getType() );
 
@@ -1039,7 +996,6 @@ public class HandlerParser {
 		CtInvocation<?> inv
 	) {
 
-		CtTypeReference<?> result = resolveSourceBackedTypeReference( inv.getType() );
 		CtElement current = inv;
 
 		while (current != null) {
@@ -1057,20 +1013,12 @@ public class HandlerParser {
 
 			}
 
-			if (! (parent instanceof CtInvocation<?> parentInv)) {
+			if (parent instanceof CtLambda<?> || ! (parent instanceof CtExpression<?>)) {
 				break;
 
 			}
 
-			CtTypeReference<?> candidate = resolveSourceBackedTypeReference( parentInv.getType() );
-
-			if (! isRequestParameterTransformation( parentInv, current, result, candidate )) {
-				break;
-
-			}
-
-			result = candidate;
-			current = parentInv;
+			current = parent;
 
 		}
 
