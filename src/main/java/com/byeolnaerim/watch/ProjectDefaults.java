@@ -46,6 +46,8 @@ public final class ProjectDefaults {
 
 	public static final String SWAGGER_OUTPUT_FILE; // slash
 
+	public static final String PRP_OUTPUT_FILE; // slash
+
 	private static final String BASE_PACKAGE_OVERRIDE_PROP = "app.basePackage";
 
 	static {
@@ -84,6 +86,7 @@ public final class ProjectDefaults {
 		HANDLER_OUTPUT_DIR = (SRC_MAIN_JAVA + "/" + HANDLER_PACKAGE.replace( '.', '/' ) + "/").replaceAll( "/+", "/" );
 		WATCH_DIR = SRC_MAIN_JAVA;
 		SWAGGER_OUTPUT_FILE = SRC_MAIN_RESOURCES + "/static/swagger.json";
+		PRP_OUTPUT_FILE = SRC_MAIN_RESOURCES + "/static/prp.json";
 
 	}
 

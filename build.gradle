@@ -35,6 +35,8 @@ dependencies {
 	
 	compileOnly 'org.springframework:spring-webflux'
 	compileOnly 'io.projectreactor:reactor-core'
+
+	api "com.byeolnaerim:pure-reactive-protocol:0.0.1-alpha"
 	
 	implementation platform('tools.jackson:jackson-bom:3.1.5')
 	implementation 'tools.jackson.core:jackson-databind'

@@ -22,6 +22,7 @@ import com.byeolnaerim.watch.db.EntityFileWatcher;
 import com.byeolnaerim.watch.document.AbstractSpoonDocumentWatcher;
 import com.byeolnaerim.watch.document.SpoonAnalysisCache;
 import com.byeolnaerim.watch.document.asyncapi.rsocket.RsoketAsyncApiJsonFileWatcher;
+import com.byeolnaerim.watch.document.prp.PrpJsonFileWatcher;
 import com.byeolnaerim.watch.document.swagger.SwaggerJsonFileWatcher;
 import com.byeolnaerim.watch.route.HandlerGenerator;
 import reactor.core.Disposable;
@@ -84,6 +85,8 @@ public final class WatchForMainRun {
 
 		private final WatcherFactory<RsoketAsyncApiJsonFileWatcher> asyncApiFactory;
 
+		private final WatcherFactory<PrpJsonFileWatcher> prpFactory;
+
 		private final List<Path> classpathWatchRoots;
 
 		private Config(
@@ -99,9 +102,10 @@ public final class WatchForMainRun {
 			this.handlerFactory = b.handlerFactory;
 			this.swaggerFactory = b.swaggerFactory;
 			this.asyncApiFactory = b.asyncApiFactory;
+			this.prpFactory = b.prpFactory;
 			this.classpathWatchRoots = List.copyOf( b.classpathWatchRoots );
 
-			if (entityFactory == null && handlerFactory == null && swaggerFactory == null && asyncApiFactory == null) {
+			if (entityFactory == null && handlerFactory == null && swaggerFactory == null && asyncApiFactory == null && prpFactory == null) {
 				throw new IllegalStateException(
 					"At least one watcher factory must be provided."
 				);
@@ -145,6 +149,8 @@ public final class WatchForMainRun {
 			private WatcherFactory<SwaggerJsonFileWatcher> swaggerFactory;
 
 			private WatcherFactory<RsoketAsyncApiJsonFileWatcher> asyncApiFactory;
+
+			private WatcherFactory<PrpJsonFileWatcher> prpFactory;
 
 			private final List<Path> classpathWatchRoots = new ArrayList<>();
 
@@ -339,6 +345,26 @@ public final class WatchForMainRun {
 
 			}
 
+			/** Configures generation of the PRP @PrpRoute contract document. */
+			public Builder prpConfig(
+				PrpJsonFileWatcher.Config cfg
+			) {
+
+				this.prpFactory = () -> new PrpJsonFileWatcher( cfg );
+				return this;
+
+			}
+
+			/** Sets a custom lazy factory for the PRP contract watcher. */
+			public Builder prpFactory(
+				WatcherFactory<PrpJsonFileWatcher> f
+			) {
+
+				this.prpFactory = f;
+				return this;
+
+			}
+
 			/**
 			 * Adds classpath watch roots from a CSV or OS path-separator-delimited string.
 			 *
@@ -427,6 +453,8 @@ public final class WatchForMainRun {
 
 	private RsoketAsyncApiJsonFileWatcher asyncApiFactory;
 
+	private PrpJsonFileWatcher prp;
+
 	private volatile boolean running = false;
 
 	private Disposable subscription;
@@ -506,6 +534,16 @@ public final class WatchForMainRun {
 
 		if (asyncApiFactory != null) {
 			watchers.add( asyncApiFactory );
+
+		}
+
+		if (prp == null && config.prpFactory != null) {
+			prp = config.prpFactory.create();
+
+		}
+
+		if (prp != null) {
+			watchers.add( prp );
 
 		}
 
