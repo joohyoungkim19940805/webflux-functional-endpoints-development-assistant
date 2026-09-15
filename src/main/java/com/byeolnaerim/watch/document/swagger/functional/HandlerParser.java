@@ -2,6 +2,11 @@ package com.byeolnaerim.watch.document.swagger.functional;
 
 
 import java.io.File;
+import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.TypeVariable;
+import java.lang.reflect.WildcardType;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -58,6 +63,7 @@ import spoon.reflect.reference.CtFieldReference;
 import spoon.reflect.reference.CtTypeMemberWildcardImportReference;
 import spoon.reflect.reference.CtTypeParameterReference;
 import spoon.reflect.reference.CtTypeReference;
+import spoon.reflect.reference.CtWildcardReference;
 import spoon.reflect.visitor.filter.TypeFilter;
 
 
@@ -903,23 +909,30 @@ public class HandlerParser {
 		CtLambda<?> lambda
 	) {
 
-		CtElement body = lambda.getBody();
-		if (body == null)
+		if (lambda == null) {
 			return null;
-		// [디버깅 4단계] =========================================================
-		// System.out.println( "[DEBUG] 4. Analyzing Lambda Body. Body Type: " +
-		// body.getClass().getSimpleName() );
-		// =====================================================================
 
-		// Expression body: () -> data
-		if (body instanceof CtExpression) { return (CtExpression<?>) body; }
+		}
 
-		// Block body: () -> { return data; }
-		if (body instanceof CtBlock) {
-			CtBlock<?> blockBody = (CtBlock<?>) body;
+		// Spoon에서 expression lambda는 getBody()가 null이고 getExpression()에 값이 들어간다.
+		CtExpression<?> expression = lambda.getExpression();
+
+		if (expression != null) {
+			return expression;
+
+		}
+
+		CtBlock<?> blockBody = lambda.getBody();
+
+		if (blockBody != null) {
 
 			// 1) 명시적 return 우선
-			List<CtReturn<?>> returnStatements = blockBody.getElements( new TypeFilter<>( CtReturn.class ) );
+			@SuppressWarnings("rawtypes")
+			List<CtReturn> returnStatements = blockBody
+				.getElements( new TypeFilter<>( CtReturn.class ) )
+				.stream()
+				.filter( returnStatement -> returnStatement.getParent( CtLambda.class ) == lambda )
+				.toList();
 
 			if (! returnStatements.isEmpty()) { return returnStatements.get( 0 ).getReturnedExpression(); }
 
@@ -2165,46 +2178,10 @@ public class HandlerParser {
 
 
 			CtExpression<?> firstArg = inv.getArguments().get( 0 );
-
-			CtTypeReference<?> firstArgTypeRef = firstArg.getType();
-			boolean isParseFailedFlag = false;
-			// [최종 디버깅] =================================================================
-			// String typeName = (firstArgTypeRef != null) ? firstArgTypeRef.getQualifiedName() : "NULL";
-			// System.out
-			// .println(
-			// "[FINAL_DEBUG] Type Inferred for .body() argument: " + typeName + "---" + (firstArgTypeRef ==
-			// null ? "[empty]"
-			// : firstArgTypeRef
-			// .getReferencedTypes())
-			// );
-			// ==============================================================================
-
-			CtInvocation<?> responseFactoryInvocation = null;
-
-
-			if (firstArg instanceof CtInvocation<?> ctInvocation) {
-				responseFactoryInvocation = ctInvocation;
-
-			} else {
-				List<CtInvocation<?>> nestedInvocations = firstArg.getElements( new TypeFilter<>( CtInvocation.class ) );
-
-				if (! nestedInvocations.isEmpty()) {
-					responseFactoryInvocation = nestedInvocations.get( nestedInvocations.size() - 1 );
-
-				}
-
-			}
-
-			if (responseFactoryInvocation != null) {
-				CtTypeReference<?> inferredResponseTypeRef = manuallyInferResponseType( responseFactoryInvocation );
-
-				if (inferredResponseTypeRef != null) {
-					firstArgTypeRef = inferredResponseTypeRef;
-					isParseFailedFlag = true;
-
-				}
-
-			}
+			CtTypeReference<?> spoonTypeRef = resolveSourceBackedTypeReference( firstArg.getType() );
+			CtTypeReference<?> inferredTypeRef = inferExpressionTypeForGenericInference( firstArg );
+			CtTypeReference<?> firstArgTypeRef = chooseMoreSpecificType( spoonTypeRef, inferredTypeRef );
+			boolean isParseFailedFlag = firstArgTypeRef != null && typeSpecificityScore( firstArgTypeRef ) > typeSpecificityScore( spoonTypeRef );
 
 			HandlerInfo.Info rawResponseInfo = buildParamInfoFromTypeRef( firstArgTypeRef );
 			rawResponseInfo.setPosition( LayerPosition.RESPONSE_BODY );
@@ -2437,6 +2414,1203 @@ public class HandlerParser {
 
 	}
 
+	private CtTypeReference<?> inferExpressionTypeForGenericInference(
+		CtExpression<?> expression
+	) {
+
+		return inferExpressionTypeForGenericInference(
+			expression,
+			Collections.newSetFromMap( new IdentityHashMap<>() )
+		);
+
+	}
+
+	private CtTypeReference<?> inferExpressionTypeForGenericInference(
+		CtExpression<?> expression, Set<CtElement> visiting
+	) {
+
+		if (expression == null) {
+			return null;
+
+		}
+
+		if (! visiting.add( expression )) {
+			return resolveSourceBackedTypeReference( expression.getType() );
+
+		}
+
+		try {
+
+			if (expression instanceof CtVariableRead<?> variableRead && variableRead.getVariable() != null && variableRead.getVariable().getDeclaration() instanceof CtVariable<?> variable) {
+				CtTypeReference<?> declaredTypeRef = resolveSourceBackedTypeReference( variable.getType() );
+
+				if (variable instanceof CtLocalVariable<?> localVariable && localVariable.getDefaultExpression() != null) {
+					return chooseMoreSpecificType(
+						declaredTypeRef,
+						inferExpressionTypeForGenericInference( localVariable.getDefaultExpression(), visiting )
+					);
+
+				}
+
+				return declaredTypeRef;
+
+			}
+
+			if (expression instanceof CtFieldAccess<?> fieldAccess && fieldAccess.getVariable() != null && fieldAccess.getVariable().getDeclaration() instanceof CtVariable<?> variable) {
+				return resolveSourceBackedTypeReference( variable.getType() );
+
+			}
+
+			if (expression instanceof CtInvocation<?> invocation) {
+				return inferInvocationReturnType( invocation, visiting );
+
+			}
+
+			return resolveSourceBackedTypeReference( expression.getType() );
+
+		} finally {
+			visiting.remove( expression );
+
+		}
+
+	}
+
+	private CtTypeReference<?> inferInvocationReturnType(
+		CtInvocation<?> invocation, Set<CtElement> visiting
+	) {
+
+		CtTypeReference<?> bestTypeRef = resolveSourceBackedTypeReference( invocation.getType() );
+
+		for (CtMethod<?> candidate : resolveInvocationMethods( invocation )) {
+			Map<String, CtTypeReference<?>> bindings = new HashMap<>();
+			CtExpression<?> target = invocation.getTarget();
+
+			if (target != null && ! (target instanceof CtTypeAccess<?>) && candidate.getDeclaringType() != null) {
+				CtTypeReference<?> targetTypeRef = inferExpressionTypeForGenericInference( target, visiting );
+
+				if (targetTypeRef != null) {
+					bindTypeParameters( formalTypeReference( candidate.getDeclaringType() ), targetTypeRef, bindings );
+
+				}
+
+			}
+
+			int loopSize = Math.min( candidate.getParameters().size(), invocation.getArguments().size() );
+
+			for (int i = 0; i < loopSize; i++) {
+				CtTypeReference<?> formalParameterTypeRef = resolveSourceBackedTypeReference( candidate.getParameters().get( i ).getType() );
+				CtExpression<?> argument = invocation.getArguments().get( i );
+
+				if (argument instanceof CtLambda<?> lambda) {
+					bindLambdaTypeParameters( formalParameterTypeRef, lambda, bindings, visiting );
+
+				} else {
+					bindTypeParameters(
+						formalParameterTypeRef,
+						inferExpressionTypeForGenericInference( argument, visiting ),
+						bindings
+					);
+
+				}
+
+			}
+
+			CtTypeReference<?> inferredReturnTypeRef = applyTypeBindings( candidate.getType(), bindings );
+			bestTypeRef = chooseMoreSpecificType( bestTypeRef, inferredReturnTypeRef );
+
+		}
+
+		bestTypeRef = chooseMoreSpecificType(
+			bestTypeRef,
+			inferInvocationReturnTypeReflectively( invocation, visiting )
+		);
+
+		return resolveSourceBackedTypeReference( bestTypeRef );
+
+	}
+
+	private CtTypeReference<?> inferInvocationReturnTypeReflectively(
+		CtInvocation<?> invocation, Set<CtElement> visiting
+	) {
+
+		if (invocation == null || invocation.getExecutable() == null) {
+			return null;
+
+		}
+
+		CtExpression<?> target = invocation.getTarget();
+		CtTypeReference<?> targetTypeRef = target != null
+			? inferExpressionTypeForGenericInference( target, visiting )
+			: resolveSourceBackedTypeReference( invocation.getExecutable().getDeclaringType() );
+
+		if (targetTypeRef == null) {
+			targetTypeRef = resolveSourceBackedTypeReference( invocation.getExecutable().getDeclaringType() );
+
+		}
+
+		Class<?> targetClass = loadClassFromTypeReference( targetTypeRef );
+
+		if (targetClass == null || targetClass == Object.class) {
+			return null;
+
+		}
+
+		String methodName = invocation.getExecutable().getSimpleName();
+		CtTypeReference<?> bestTypeRef = null;
+
+		for (Method method : targetClass.getMethods()) {
+
+			if (! method.getName().equals( methodName ) || method.getParameterCount() != invocation.getArguments().size()) {
+				continue;
+
+			}
+
+			CtTypeReference<?> declaringView = projectToSuperType( targetTypeRef, method.getDeclaringClass().getName() );
+
+			if (declaringView == null) {
+				continue;
+
+			}
+
+			Map<TypeVariable<?>, CtTypeReference<?>> bindings = buildReflectiveTypeBindings( method.getDeclaringClass(), declaringView );
+			Type[] formalParameterTypes = method.getGenericParameterTypes();
+			boolean compatible = true;
+
+			for (int i = 0; i < formalParameterTypes.length; i++) {
+				CtExpression<?> argument = invocation.getArguments().get( i );
+
+				if (argument instanceof CtLambda<?> lambda) {
+
+					if (! bindReflectiveLambdaTypeParameters( formalParameterTypes[i], lambda, bindings, visiting, targetTypeRef.getFactory() )) {
+						compatible = false;
+						break;
+
+					}
+
+				} else {
+					CtTypeReference<?> actualArgumentTypeRef = inferExpressionTypeForGenericInference( argument, visiting );
+
+					if (! isReflectiveArgumentCompatible( formalParameterTypes[i], actualArgumentTypeRef, bindings, targetTypeRef.getFactory() )) {
+						compatible = false;
+						break;
+
+					}
+
+					bindReflectiveTypeParameters(
+						formalParameterTypes[i],
+						actualArgumentTypeRef,
+						bindings,
+						Map.of(),
+						targetTypeRef.getFactory()
+					);
+
+				}
+
+			}
+
+			if (! compatible) {
+				continue;
+
+			}
+
+			CtTypeReference<?> inferredReturnTypeRef = resolveReflectiveTypeReference(
+				method.getGenericReturnType(),
+				bindings,
+				targetTypeRef.getFactory()
+			);
+			bestTypeRef = chooseMoreSpecificType( bestTypeRef, inferredReturnTypeRef );
+
+		}
+
+		return bestTypeRef;
+
+	}
+
+	private boolean bindReflectiveLambdaTypeParameters(
+		Type formalFunctionalType, CtLambda<?> lambda, Map<TypeVariable<?>, CtTypeReference<?>> methodBindings, Set<CtElement> visiting, Factory factory
+	) {
+
+		Class<?> functionalClass = rawReflectiveClass( formalFunctionalType );
+
+		if (functionalClass == null || ! functionalClass.isInterface()) {
+			return false;
+
+		}
+
+		List<Method> abstractMethods = java.util.Arrays
+			.stream( functionalClass.getMethods() )
+			.filter( method -> java.lang.reflect.Modifier.isAbstract( method.getModifiers() ) )
+			.filter( method -> ! java.lang.reflect.Modifier.isStatic( method.getModifiers() ) )
+			.filter( method -> ! method.isDefault() )
+			.filter( method -> ! method.isBridge() && ! method.isSynthetic() )
+			.filter( method -> method.getDeclaringClass() != Object.class )
+			.filter( method -> method.getParameterCount() == lambda.getParameters().size() )
+			.toList();
+
+		if (abstractMethods.size() != 1) {
+			return false;
+
+		}
+
+		Method functionalMethod = abstractMethods.get( 0 );
+		Map<TypeVariable<?>, Type> functionalSubstitutions = buildReflectiveTypeSubstitutions( functionalClass, formalFunctionalType );
+
+		if (! functionalMethod.getDeclaringClass().equals( functionalClass )) {
+			functionalSubstitutions = projectReflectiveTypeSubstitutions(
+				functionalClass,
+				functionalSubstitutions,
+				functionalMethod.getDeclaringClass(),
+				new HashSet<>()
+			);
+
+			if (functionalSubstitutions == null) {
+				return false;
+
+			}
+
+		}
+
+		Type[] functionalParameterTypes = functionalMethod.getGenericParameterTypes();
+		int parameterLoopSize = Math.min( functionalParameterTypes.length, lambda.getParameters().size() );
+
+		for (int i = 0; i < parameterLoopSize; i++) {
+			CtTypeReference<?> lambdaParameterTypeRef = resolveSourceBackedTypeReference( lambda.getParameters().get( i ).getType() );
+
+			if (lambdaParameterTypeRef == null || "java.lang.Object".equals( lambdaParameterTypeRef.getQualifiedName() )) {
+				continue;
+
+			}
+
+			bindReflectiveTypeParameters(
+				functionalParameterTypes[i],
+				lambdaParameterTypeRef,
+				methodBindings,
+				functionalSubstitutions,
+				factory
+			);
+
+		}
+
+		CtTypeReference<?> lambdaReturnTypeRef = inferLambdaReturnType( lambda, visiting );
+
+		if (lambdaReturnTypeRef == null) {
+			return false;
+
+		}
+
+		bindReflectiveTypeParameters(
+			functionalMethod.getGenericReturnType(),
+			lambdaReturnTypeRef,
+			methodBindings,
+			functionalSubstitutions,
+			factory
+		);
+
+		return true;
+
+	}
+
+	private boolean isReflectiveArgumentCompatible(
+		Type formalType, CtTypeReference<?> actualTypeRef, Map<TypeVariable<?>, CtTypeReference<?>> bindings, Factory factory
+	) {
+
+		if (actualTypeRef == null) {
+			return true;
+
+		}
+
+		if (formalType instanceof TypeVariable<?> || formalType instanceof WildcardType) {
+			return true;
+
+		}
+
+		Class<?> formalClass = rawReflectiveClass( formalType );
+		Class<?> actualClass = loadClassFromTypeReference( actualTypeRef );
+
+		if (formalClass == null || actualClass == null || actualClass == Object.class) {
+			return true;
+
+		}
+
+		return formalClass.isAssignableFrom( actualClass );
+
+	}
+
+	private void bindReflectiveTypeParameters(
+		Type formalType, CtTypeReference<?> actualTypeRef, Map<TypeVariable<?>, CtTypeReference<?>> bindings, Map<TypeVariable<?>, Type> substitutions, Factory factory
+	) {
+
+		if (formalType == null || actualTypeRef == null) {
+			return;
+
+		}
+
+		if (formalType instanceof TypeVariable<?> typeVariable) {
+			Type substitutedType = substitutions != null ? substitutions.get( typeVariable ) : null;
+
+			if (substitutedType != null && substitutedType != typeVariable) {
+				bindReflectiveTypeParameters( substitutedType, actualTypeRef, bindings, substitutions, factory );
+				return;
+
+			}
+
+			CtTypeReference<?> currentBinding = bindings.get( typeVariable );
+			bindings.put( typeVariable, chooseMoreSpecificType( currentBinding, actualTypeRef ) );
+			return;
+
+		}
+
+		if (formalType instanceof WildcardType wildcardType) {
+			Type[] lowerBounds = wildcardType.getLowerBounds();
+
+			if (lowerBounds.length > 0) {
+				bindReflectiveTypeParameters( lowerBounds[0], actualTypeRef, bindings, substitutions, factory );
+				return;
+
+			}
+
+			Type[] upperBounds = wildcardType.getUpperBounds();
+
+			if (upperBounds.length > 0 && upperBounds[0] != Object.class) {
+				bindReflectiveTypeParameters( upperBounds[0], actualTypeRef, bindings, substitutions, factory );
+
+			}
+
+			return;
+
+		}
+
+		if (formalType instanceof ParameterizedType parameterizedType && parameterizedType.getRawType() instanceof Class<?> rawClass) {
+			CtTypeReference<?> projectedActualTypeRef = projectToSuperType( actualTypeRef, rawClass.getName() );
+
+			if (projectedActualTypeRef == null) {
+				return;
+
+			}
+
+			Type[] formalArguments = parameterizedType.getActualTypeArguments();
+			List<CtTypeReference<?>> actualArguments = projectedActualTypeRef.getActualTypeArguments();
+			int loopSize = Math.min( formalArguments.length, actualArguments.size() );
+
+			for (int i = 0; i < loopSize; i++) {
+				bindReflectiveTypeParameters(
+					formalArguments[i],
+					actualArguments.get( i ),
+					bindings,
+					substitutions,
+					factory
+				);
+
+			}
+
+		}
+
+	}
+
+	private Map<TypeVariable<?>, Type> buildReflectiveTypeSubstitutions(
+		Class<?> rawClass, Type declaredType
+	) {
+
+		Map<TypeVariable<?>, Type> substitutions = new HashMap<>();
+
+		if (rawClass == null) {
+			return substitutions;
+
+		}
+
+		if (declaredType instanceof ParameterizedType parameterizedType) {
+			TypeVariable<?>[] variables = rawClass.getTypeParameters();
+			Type[] actualArguments = parameterizedType.getActualTypeArguments();
+			int loopSize = Math.min( variables.length, actualArguments.length );
+
+			for (int i = 0; i < loopSize; i++) {
+				substitutions.put( variables[i], actualArguments[i] );
+
+			}
+
+		}
+
+		return substitutions;
+
+	}
+
+	private Map<TypeVariable<?>, Type> projectReflectiveTypeSubstitutions(
+		Class<?> currentClass, Map<TypeVariable<?>, Type> currentSubstitutions, Class<?> targetClass, Set<Class<?>> visited
+	) {
+
+		if (currentClass == null || targetClass == null || ! visited.add( currentClass )) {
+			return null;
+
+		}
+
+		if (currentClass.equals( targetClass )) {
+			return currentSubstitutions;
+
+		}
+
+		List<Type> directSuperTypes = new ArrayList<>();
+		Collections.addAll( directSuperTypes, currentClass.getGenericInterfaces() );
+
+		if (currentClass.getGenericSuperclass() != null) {
+			directSuperTypes.add( currentClass.getGenericSuperclass() );
+
+		}
+
+		for (Type superType : directSuperTypes) {
+			Class<?> rawSuperClass = rawReflectiveClass( superType );
+
+			if (rawSuperClass == null || ! targetClass.isAssignableFrom( rawSuperClass )) {
+				continue;
+
+			}
+
+			Map<TypeVariable<?>, Type> nextSubstitutions = new HashMap<>();
+
+			if (superType instanceof ParameterizedType parameterizedType) {
+				TypeVariable<?>[] variables = rawSuperClass.getTypeParameters();
+				Type[] actualArguments = parameterizedType.getActualTypeArguments();
+				int loopSize = Math.min( variables.length, actualArguments.length );
+
+				for (int i = 0; i < loopSize; i++) {
+					Type resolvedType = resolveReflectiveSubstitution( actualArguments[i], currentSubstitutions );
+					nextSubstitutions.put( variables[i], resolvedType );
+
+				}
+
+			}
+
+			Map<TypeVariable<?>, Type> projected = projectReflectiveTypeSubstitutions(
+				rawSuperClass,
+				nextSubstitutions,
+				targetClass,
+				new HashSet<>( visited )
+			);
+
+			if (projected != null) {
+				return projected;
+
+			}
+
+		}
+
+		return null;
+
+	}
+
+	private Type resolveReflectiveSubstitution(
+		Type type, Map<TypeVariable<?>, Type> substitutions
+	) {
+
+		if (type instanceof TypeVariable<?> typeVariable && substitutions != null && substitutions.containsKey( typeVariable )) {
+			return resolveReflectiveSubstitution( substitutions.get( typeVariable ), substitutions );
+
+		}
+
+		return type;
+
+	}
+
+	private void bindLambdaTypeParameters(
+		CtTypeReference<?> formalFunctionalTypeRef, CtLambda<?> lambda, Map<String, CtTypeReference<?>> bindings, Set<CtElement> visiting
+	) {
+
+		if (formalFunctionalTypeRef == null || lambda == null) {
+			return;
+
+		}
+
+		formalFunctionalTypeRef = applyTypeBindings( formalFunctionalTypeRef, bindings );
+		FunctionalSignature functionalSignature = resolveFunctionalSignature( formalFunctionalTypeRef, lambda );
+
+		if (functionalSignature == null) {
+			return;
+
+		}
+
+		int parameterLoopSize = Math.min( functionalSignature.parameterTypes().size(), lambda.getParameters().size() );
+
+		for (int i = 0; i < parameterLoopSize; i++) {
+			CtTypeReference<?> lambdaParameterTypeRef = resolveSourceBackedTypeReference( lambda.getParameters().get( i ).getType() );
+
+			if (lambdaParameterTypeRef == null || "java.lang.Object".equals( lambdaParameterTypeRef.getQualifiedName() )) {
+				continue;
+
+			}
+
+			bindTypeParameters(
+				functionalSignature.parameterTypes().get( i ),
+				lambdaParameterTypeRef,
+				bindings
+			);
+
+		}
+
+		CtTypeReference<?> lambdaReturnTypeRef = inferLambdaReturnType( lambda, visiting );
+
+		if (lambdaReturnTypeRef != null) {
+			bindTypeParameters(
+				functionalSignature.returnType(),
+				lambdaReturnTypeRef,
+				bindings
+			);
+
+		}
+
+	}
+
+	private record FunctionalSignature(
+		List<CtTypeReference<?>> parameterTypes,
+		CtTypeReference<?> returnType
+	) {}
+
+	private FunctionalSignature resolveFunctionalSignature(
+		CtTypeReference<?> functionalTypeRef, CtLambda<?> lambda
+	) {
+
+		FunctionalSignature spoonSignature = null;
+		CtMethod<?> functionalMethod = resolveFunctionalMethod( functionalTypeRef, lambda );
+
+		if (functionalMethod != null) {
+			Map<String, CtTypeReference<?>> functionalBindings = new HashMap<>();
+
+			if (functionalMethod.getDeclaringType() != null) {
+				CtTypeReference<?> declaringView = projectToSuperType(
+					functionalTypeRef,
+					functionalMethod.getDeclaringType().getQualifiedName()
+				);
+
+				bindTypeParameters(
+					formalTypeReference( functionalMethod.getDeclaringType() ),
+					declaringView != null ? declaringView : functionalTypeRef,
+					functionalBindings
+				);
+
+			}
+
+			List<CtTypeReference<?>> parameterTypes = functionalMethod
+				.getParameters()
+				.stream()
+				.<CtTypeReference<?>>map( parameter -> applyTypeBindings( parameter.getType(), functionalBindings ) )
+				.toList();
+
+			CtTypeReference<?> returnType = applyTypeBindings( functionalMethod.getType(), functionalBindings );
+
+			if (returnType != null) {
+				spoonSignature = new FunctionalSignature( parameterTypes, returnType );
+
+			}
+
+		}
+
+		FunctionalSignature reflectiveSignature = resolveFunctionalSignatureReflectively( functionalTypeRef, lambda );
+
+		if (spoonSignature == null) {
+			return reflectiveSignature;
+
+		}
+
+		if (reflectiveSignature == null) {
+			return spoonSignature;
+
+		}
+
+		return typeSpecificityScore( reflectiveSignature.returnType() ) > typeSpecificityScore( spoonSignature.returnType() )
+			? reflectiveSignature
+			: spoonSignature;
+
+	}
+
+	private FunctionalSignature resolveFunctionalSignatureReflectively(
+		CtTypeReference<?> functionalTypeRef, CtLambda<?> lambda
+	) {
+
+		functionalTypeRef = resolveSourceBackedTypeReference( functionalTypeRef );
+
+		if (functionalTypeRef instanceof CtWildcardReference wildcardReference && wildcardReference.getBoundingType() != null) {
+			functionalTypeRef = resolveSourceBackedTypeReference( wildcardReference.getBoundingType() );
+
+		}
+
+		if (functionalTypeRef == null) {
+			return null;
+
+		}
+
+		Class<?> functionalClass = loadClassFromTypeReference( functionalTypeRef );
+
+		if (functionalClass == null || functionalClass == Object.class || ! functionalClass.isInterface()) {
+			return null;
+
+		}
+
+		List<Method> abstractMethods = java.util.Arrays
+			.stream( functionalClass.getMethods() )
+			.filter( method -> java.lang.reflect.Modifier.isAbstract( method.getModifiers() ) )
+			.filter( method -> ! java.lang.reflect.Modifier.isStatic( method.getModifiers() ) )
+			.filter( method -> ! method.isDefault() )
+			.filter( method -> ! method.isBridge() && ! method.isSynthetic() )
+			.filter( method -> method.getDeclaringClass() != Object.class )
+			.filter( method -> method.getParameterCount() == lambda.getParameters().size() )
+			.toList();
+
+		if (abstractMethods.size() != 1) {
+			return null;
+
+		}
+
+		Method functionalMethod = abstractMethods.get( 0 );
+		CtTypeReference<?> declaringView = projectToSuperType( functionalTypeRef, functionalMethod.getDeclaringClass().getName() );
+
+		if (declaringView == null) {
+			return null;
+
+		}
+
+		Map<TypeVariable<?>, CtTypeReference<?>> typeBindings = buildReflectiveTypeBindings(
+			functionalMethod.getDeclaringClass(),
+			declaringView
+		);
+		Factory factory = functionalTypeRef.getFactory();
+		List<CtTypeReference<?>> parameterTypes = java.util.Arrays
+			.stream( functionalMethod.getGenericParameterTypes() )
+			.<CtTypeReference<?>>map( type -> resolveReflectiveTypeReference( type, typeBindings, factory ) )
+			.toList();
+		CtTypeReference<?> returnType = resolveReflectiveTypeReference(
+			functionalMethod.getGenericReturnType(),
+			typeBindings,
+			factory
+		);
+
+		return returnType != null ? new FunctionalSignature( parameterTypes, returnType ) : null;
+
+	}
+
+	private CtMethod<?> resolveFunctionalMethod(
+		CtTypeReference<?> functionalTypeRef, CtLambda<?> lambda
+	) {
+
+		try {
+			CtMethod<?> overriddenMethod = lambda.getOverriddenMethod();
+
+			if (overriddenMethod != null) {
+				return overriddenMethod;
+
+			}
+
+		} catch (RuntimeException ignored) {}
+
+		functionalTypeRef = resolveSourceBackedTypeReference( functionalTypeRef );
+
+		if (functionalTypeRef instanceof CtWildcardReference wildcardReference && wildcardReference.getBoundingType() != null) {
+			functionalTypeRef = resolveSourceBackedTypeReference( wildcardReference.getBoundingType() );
+
+		}
+
+		if (functionalTypeRef == null) {
+			return null;
+
+		}
+
+		CtType<?> functionalType = functionalTypeRef.getTypeDeclaration();
+
+		if (functionalType == null) {
+			functionalType = resolveSourceBackedType( functionalTypeRef );
+
+		}
+
+		if (functionalType == null) {
+			return null;
+
+		}
+
+		List<CtMethod<?>> candidates = functionalType
+			.getAllMethods()
+			.stream()
+			.filter( method -> ! method.isDefaultMethod() )
+			.filter( method -> ! method.hasModifier( ModifierKind.STATIC ) )
+			.filter( method -> ! method.hasModifier( ModifierKind.PRIVATE ) )
+			.filter( method -> method.getParameters().size() == lambda.getParameters().size() )
+			.filter( method -> method.getDeclaringType() == null || ! "java.lang.Object".equals( method.getDeclaringType().getQualifiedName() ) )
+			.toList();
+
+		if (candidates.size() == 1) {
+			return candidates.get( 0 );
+
+		}
+
+		List<CtMethod<?>> abstractCandidates = candidates
+			.stream()
+			.filter( method -> method.hasModifier( ModifierKind.ABSTRACT ) )
+			.toList();
+
+		return abstractCandidates.size() == 1 ? abstractCandidates.get( 0 ) : null;
+
+	}
+
+	private CtTypeReference<?> inferLambdaReturnType(
+		CtLambda<?> lambda, Set<CtElement> visiting
+	) {
+
+		if (lambda.getExpression() != null) {
+			return inferExpressionTypeForGenericInference( lambda.getExpression(), visiting );
+
+		}
+
+		CtBlock<?> body = lambda.getBody();
+
+		if (body == null) {
+			return null;
+
+		}
+
+		CtTypeReference<?> result = null;
+
+		for (CtReturn<?> returnStatement : body.getElements( new TypeFilter<>( CtReturn.class ) )) {
+
+			if (returnStatement.getParent( CtLambda.class ) != lambda) {
+				continue;
+
+			}
+
+			result = chooseMoreSpecificType(
+				result,
+				inferExpressionTypeForGenericInference( returnStatement.getReturnedExpression(), visiting )
+			);
+
+		}
+
+		return result;
+
+	}
+
+	private CtTypeReference<?> formalTypeReference(
+		CtType<?> type
+	) {
+
+		if (type == null) {
+			return null;
+
+		}
+
+		CtTypeReference<?> typeRef = type.getReference().clone();
+
+		if (type.getFormalCtTypeParameters() != null && ! type.getFormalCtTypeParameters().isEmpty()) {
+			typeRef
+				.setActualTypeArguments(
+					type
+						.getFormalCtTypeParameters()
+						.stream()
+						.map( parameter -> (CtTypeReference<?>) parameter.getReference().clone() )
+						.toList()
+				);
+
+		}
+
+		return typeRef;
+
+	}
+
+	private CtTypeReference<?> projectToSuperType(
+		CtTypeReference<?> actualTypeRef, String targetQualifiedName
+	) {
+
+		return projectToSuperType( actualTypeRef, targetQualifiedName, new HashSet<>() );
+
+	}
+
+	private CtTypeReference<?> projectToSuperType(
+		CtTypeReference<?> actualTypeRef, String targetQualifiedName, Set<String> visited
+	) {
+
+		actualTypeRef = resolveSourceBackedTypeReference( actualTypeRef );
+
+		if (actualTypeRef instanceof CtWildcardReference wildcardReference && wildcardReference.getBoundingType() != null) {
+			actualTypeRef = resolveSourceBackedTypeReference( wildcardReference.getBoundingType() );
+
+		}
+
+		if (actualTypeRef == null || targetQualifiedName == null || actualTypeRef.getQualifiedName() == null) {
+			return null;
+
+		}
+
+		if (targetQualifiedName.equals( actualTypeRef.getQualifiedName() )) {
+			return actualTypeRef;
+
+		}
+
+		if (! visited.add( actualTypeRef.getQualifiedName() )) {
+			return null;
+
+		}
+
+		CtType<?> actualType = actualTypeRef.getTypeDeclaration();
+
+		if (actualType == null || (actualType.isShadow() && findExternalDeclaringType( actualTypeRef.getQualifiedName(), actualTypeRef.getSimpleName() ) != null)) {
+			CtType<?> sourceBackedType = resolveSourceBackedType( actualTypeRef );
+
+			if (sourceBackedType != null) {
+				actualType = sourceBackedType;
+
+			}
+
+		}
+
+		if (actualType != null && ! actualType.isShadow()) {
+			Map<String, CtTypeReference<?>> typeBindings = new HashMap<>();
+			bindTypeParameters( formalTypeReference( actualType ), actualTypeRef, typeBindings );
+
+			for (CtTypeReference<?> superInterfaceRef : actualType.getSuperInterfaces()) {
+				CtTypeReference<?> resolvedSuperInterfaceRef = applyTypeBindings( superInterfaceRef, typeBindings );
+				CtTypeReference<?> projected = projectToSuperType( resolvedSuperInterfaceRef, targetQualifiedName, new HashSet<>( visited ) );
+
+				if (projected != null) {
+					return projected;
+
+				}
+
+			}
+
+			CtTypeReference<?> superClassRef = actualType.getSuperclass();
+
+			if (superClassRef != null) {
+				CtTypeReference<?> projected = projectToSuperType(
+					applyTypeBindings( superClassRef, typeBindings ),
+					targetQualifiedName,
+					new HashSet<>( visited )
+				);
+
+				if (projected != null) {
+					return projected;
+
+				}
+
+			}
+
+		}
+
+		// noClasspath/shadow 타입은 Spoon 모델에 generic hierarchy가 없을 수 있다.
+		// 런타임에 로딩 가능한 타입이면 Java reflection의 generic super type 정보를 사용한다.
+		return projectToSuperTypeReflectively( actualTypeRef, targetQualifiedName );
+
+	}
+
+	private CtTypeReference<?> projectToSuperTypeReflectively(
+		CtTypeReference<?> actualTypeRef, String targetQualifiedName
+	) {
+
+		if (actualTypeRef == null || targetQualifiedName == null) {
+			return null;
+
+		}
+
+		Class<?> actualClass = loadClassFromTypeReference( actualTypeRef );
+		Class<?> targetClass = TypeInfoParser.loadClass( targetQualifiedName );
+
+		if (actualClass == null || actualClass == Object.class || targetClass == null || targetClass == Object.class || ! targetClass.isAssignableFrom( actualClass )) {
+			return null;
+
+		}
+
+		Map<TypeVariable<?>, CtTypeReference<?>> initialBindings = buildReflectiveTypeBindings( actualClass, actualTypeRef );
+
+		return projectReflectiveClass(
+			actualClass,
+			initialBindings,
+			targetClass,
+			actualTypeRef.getFactory(),
+			new HashSet<>()
+		);
+
+	}
+
+	private CtTypeReference<?> projectReflectiveClass(
+		Class<?> currentClass, Map<TypeVariable<?>, CtTypeReference<?>> currentBindings, Class<?> targetClass, Factory factory, Set<Class<?>> visited
+	) {
+
+		if (currentClass == null || targetClass == null || factory == null || ! visited.add( currentClass )) {
+			return null;
+
+		}
+
+		if (currentClass.equals( targetClass )) {
+			return buildReflectiveClassReference( currentClass, currentBindings, factory );
+
+		}
+
+		List<Type> directSuperTypes = new ArrayList<>();
+		Collections.addAll( directSuperTypes, currentClass.getGenericInterfaces() );
+
+		if (currentClass.getGenericSuperclass() != null) {
+			directSuperTypes.add( currentClass.getGenericSuperclass() );
+
+		}
+
+		for (Type superType : directSuperTypes) {
+			Class<?> rawSuperClass = rawReflectiveClass( superType );
+
+			if (rawSuperClass == null || ! targetClass.isAssignableFrom( rawSuperClass )) {
+				continue;
+
+			}
+
+			Map<TypeVariable<?>, CtTypeReference<?>> superBindings = buildReflectiveSuperTypeBindings(
+				superType,
+				currentBindings,
+				factory
+			);
+			CtTypeReference<?> projected = projectReflectiveClass(
+				rawSuperClass,
+				superBindings,
+				targetClass,
+				factory,
+				new HashSet<>( visited )
+			);
+
+			if (projected != null) {
+				return projected;
+
+			}
+
+		}
+
+		return null;
+
+	}
+
+	private Map<TypeVariable<?>, CtTypeReference<?>> buildReflectiveTypeBindings(
+		Class<?> rawClass, CtTypeReference<?> typeRef
+	) {
+
+		Map<TypeVariable<?>, CtTypeReference<?>> bindings = new HashMap<>();
+
+		if (rawClass == null || typeRef == null) {
+			return bindings;
+
+		}
+
+		TypeVariable<?>[] variables = rawClass.getTypeParameters();
+		List<CtTypeReference<?>> actualArguments = typeRef.getActualTypeArguments();
+		int loopSize = Math.min( variables.length, actualArguments != null ? actualArguments.size() : 0 );
+
+		for (int i = 0; i < loopSize; i++) {
+			CtTypeReference<?> actualArgument = resolveSourceBackedTypeReference( actualArguments.get( i ) );
+
+			if (actualArgument != null) {
+				bindings.put( variables[i], actualArgument );
+
+			}
+
+		}
+
+		return bindings;
+
+	}
+
+	private Map<TypeVariable<?>, CtTypeReference<?>> buildReflectiveSuperTypeBindings(
+		Type superType, Map<TypeVariable<?>, CtTypeReference<?>> currentBindings, Factory factory
+	) {
+
+		Map<TypeVariable<?>, CtTypeReference<?>> bindings = new HashMap<>();
+		Class<?> rawSuperClass = rawReflectiveClass( superType );
+
+		if (rawSuperClass == null) {
+			return bindings;
+
+		}
+
+		TypeVariable<?>[] variables = rawSuperClass.getTypeParameters();
+
+		if (superType instanceof ParameterizedType parameterizedType) {
+			Type[] actualTypes = parameterizedType.getActualTypeArguments();
+			int loopSize = Math.min( variables.length, actualTypes.length );
+
+			for (int i = 0; i < loopSize; i++) {
+				CtTypeReference<?> resolvedTypeRef = resolveReflectiveTypeReference( actualTypes[i], currentBindings, factory );
+
+				if (resolvedTypeRef != null) {
+					bindings.put( variables[i], resolvedTypeRef );
+
+				}
+
+			}
+
+		}
+
+		return bindings;
+
+	}
+
+	private Class<?> rawReflectiveClass(
+		Type type
+	) {
+
+		if (type instanceof Class<?> clazz) {
+			return clazz;
+
+		}
+
+		if (type instanceof ParameterizedType parameterizedType && parameterizedType.getRawType() instanceof Class<?> clazz) {
+			return clazz;
+
+		}
+
+		return null;
+
+	}
+
+	private CtTypeReference<?> buildReflectiveClassReference(
+		Class<?> rawClass, Map<TypeVariable<?>, CtTypeReference<?>> bindings, Factory factory
+	) {
+
+		CtTypeReference<?> typeRef = factory.Type().createReference( rawClass );
+		TypeVariable<?>[] variables = rawClass.getTypeParameters();
+
+		if (variables.length == 0) {
+			return typeRef;
+
+		}
+
+		List<CtTypeReference<?>> actualArguments = new ArrayList<>( variables.length );
+
+		for (TypeVariable<?> variable : variables) {
+			CtTypeReference<?> actualArgument = bindings.get( variable );
+
+			if (actualArgument == null) {
+				actualArgument = factory.Type().createReference( Object.class );
+
+			}
+
+			actualArguments.add( actualArgument.clone() );
+
+		}
+
+		typeRef.setActualTypeArguments( actualArguments );
+		return typeRef;
+
+	}
+
+	private CtTypeReference<?> resolveReflectiveTypeReference(
+		Type type, Map<TypeVariable<?>, CtTypeReference<?>> bindings, Factory factory
+	) {
+
+		if (type == null || factory == null) {
+			return null;
+
+		}
+
+		if (type instanceof Class<?> clazz) {
+			return factory.Type().createReference( clazz );
+
+		}
+
+		if (type instanceof TypeVariable<?> typeVariable) {
+			CtTypeReference<?> bound = bindings != null ? bindings.get( typeVariable ) : null;
+
+			return bound != null ? bound.clone() : null;
+
+		}
+
+		if (type instanceof ParameterizedType parameterizedType && parameterizedType.getRawType() instanceof Class<?> rawClass) {
+			CtTypeReference<?> typeRef = factory.Type().createReference( rawClass );
+			List<CtTypeReference<?>> actualArguments = new ArrayList<>();
+
+			for (Type actualType : parameterizedType.getActualTypeArguments()) {
+				CtTypeReference<?> actualTypeRef = resolveReflectiveTypeReference( actualType, bindings, factory );
+
+				if (actualTypeRef == null) {
+					actualTypeRef = factory.Type().createReference( Object.class );
+
+				}
+
+				actualArguments.add( actualTypeRef );
+
+			}
+
+			typeRef.setActualTypeArguments( actualArguments );
+			return typeRef;
+
+		}
+
+		if (type instanceof WildcardType wildcardType) {
+			Type[] lowerBounds = wildcardType.getLowerBounds();
+
+			if (lowerBounds.length > 0) {
+				return resolveReflectiveTypeReference( lowerBounds[0], bindings, factory );
+
+			}
+
+			Type[] upperBounds = wildcardType.getUpperBounds();
+
+			if (upperBounds.length > 0) {
+				return resolveReflectiveTypeReference( upperBounds[0], bindings, factory );
+
+			}
+
+		}
+
+		return null;
+
+	}
+
+	private CtTypeReference<?> chooseMoreSpecificType(
+		CtTypeReference<?> currentTypeRef, CtTypeReference<?> candidateTypeRef
+	) {
+
+		currentTypeRef = resolveSourceBackedTypeReference( currentTypeRef );
+		candidateTypeRef = resolveSourceBackedTypeReference( candidateTypeRef );
+
+		if (currentTypeRef == null) {
+			return candidateTypeRef;
+
+		}
+
+		if (candidateTypeRef == null) {
+			return currentTypeRef;
+
+		}
+
+		return typeSpecificityScore( candidateTypeRef ) > typeSpecificityScore( currentTypeRef )
+			? candidateTypeRef
+			: currentTypeRef;
+
+	}
+
+	private int typeSpecificityScore(
+		CtTypeReference<?> typeRef
+	) {
+
+		typeRef = resolveSourceBackedTypeReference( typeRef );
+
+		if (typeRef == null) {
+			return -1;
+
+		}
+
+		if (typeRef instanceof CtWildcardReference wildcardReference) {
+			return wildcardReference.getBoundingType() != null
+				? Math.max( 0, typeSpecificityScore( wildcardReference.getBoundingType() ) - 1 )
+				: 0;
+
+		}
+
+		if (typeRef instanceof CtTypeParameterReference || "java.lang.Object".equals( typeRef.getQualifiedName() ) || "Object".equals( typeRef.getSimpleName() )) {
+			return 0;
+
+		}
+
+		int score = 1;
+
+		for (CtTypeReference<?> actualTypeArgument : typeRef.getActualTypeArguments()) {
+			score += Math.max( 0, typeSpecificityScore( actualTypeArgument ) );
+
+		}
+
+		return score;
+
+	}
+
+
 	private CtTypeReference<?> resolveActualArgumentTypeForGenericInference(
 		CtExpression<?> argumentExpression
 	) {
@@ -2446,7 +3620,12 @@ public class HandlerParser {
 
 		}
 
-		CtTypeReference<?> actualTypeRef = resolveSourceBackedTypeReference( argumentExpression.getType() );
+		CtTypeReference<?> actualTypeRef = inferExpressionTypeForGenericInference( argumentExpression );
+
+		if (actualTypeRef == null) {
+			actualTypeRef = resolveSourceBackedTypeReference( argumentExpression.getType() );
+
+		}
 
 		if (actualTypeRef == null) {
 			return null;
@@ -2455,13 +3634,14 @@ public class HandlerParser {
 
 		String qName = actualTypeRef.getQualifiedName();
 
+		// 기존 fallback은 유지한다. 새 expression 추론기가 더 구체적인 타입을 못 만들었을 때만 사용한다.
 		if (("reactor.core.publisher.Mono".equals( qName ) || "reactor.core.publisher.Flux"
 			.equals( qName )) && ! hasUsableTypeArgument( actualTypeRef )) {
 
 			CtTypeReference<?> repairedTypeRef = tryInferRawReactorTypeFromVariableInitializer( argumentExpression, actualTypeRef );
 
 			if (repairedTypeRef != null) {
-				return resolveSourceBackedTypeReference( repairedTypeRef );
+				return chooseMoreSpecificType( actualTypeRef, repairedTypeRef );
 
 			}
 
@@ -2482,6 +3662,11 @@ public class HandlerParser {
 
 		CtTypeReference<?> argument = resolveSourceBackedTypeReference( typeRef.getActualTypeArguments().get( 0 ) );
 
+		if (argument instanceof CtWildcardReference wildcardReference && wildcardReference.getBoundingType() != null) {
+			argument = resolveSourceBackedTypeReference( wildcardReference.getBoundingType() );
+
+		}
+
 		if (argument == null || argument instanceof CtTypeParameterReference) {
 			return false;
 
@@ -2494,45 +3679,32 @@ public class HandlerParser {
 
 	}
 
-	private void collectTypeParameterNames(
-		CtTypeReference<?> typeRef, Set<String> names
+
+	private String typeParameterKey(
+		CtTypeParameterReference typeParameterReference
 	) {
 
-		typeRef = resolveSourceBackedTypeReference( typeRef );
-
-		if (typeRef == null) {
-			return;
+		if (typeParameterReference == null) {
+			return null;
 
 		}
 
-		if (typeRef instanceof CtTypeParameterReference typeParameterReference) {
-			String typeParameterName = typeParameterReference.getSimpleName();
+		if (typeParameterReference.getDeclaration() != null) {
+			CtElement owner = typeParameterReference.getDeclaration().getParent();
 
-			if (typeParameterReference.getDeclaration() != null) {
-				typeParameterName = typeParameterReference.getDeclaration().getSimpleName();
+			if (owner instanceof CtMethod<?> method && method.getDeclaringType() != null) {
+				return method.getDeclaringType().getQualifiedName() + "#" + method.getSignature() + "<" + typeParameterReference.getDeclaration().getSimpleName() + ">";
 
 			}
 
-			if (typeParameterName != null && ! typeParameterName.isBlank()) {
-				names.add( typeParameterName );
+			if (owner instanceof CtType<?> type) {
+				return type.getQualifiedName() + "<" + typeParameterReference.getDeclaration().getSimpleName() + ">";
 
 			}
 
-			return;
-
 		}
 
-		List<CtTypeReference<?>> actualTypeArguments = typeRef.getActualTypeArguments();
-
-		if (actualTypeArguments == null || actualTypeArguments.isEmpty()) {
-			return;
-
-		}
-
-		for (CtTypeReference<?> actualTypeArgument : actualTypeArguments) {
-			collectTypeParameterNames( actualTypeArgument, names );
-
-		}
+		return typeParameterReference.getSimpleName();
 
 	}
 
@@ -2548,16 +3720,28 @@ public class HandlerParser {
 
 		}
 
-		if (formalTypeRef instanceof CtTypeParameterReference typeParameterReference) {
-			String typeParameterName = typeParameterReference.getSimpleName();
+		if (formalTypeRef instanceof CtWildcardReference wildcardReference) {
 
-			if (typeParameterReference.getDeclaration() != null) {
-				typeParameterName = typeParameterReference.getDeclaration().getSimpleName();
+			if (wildcardReference.getBoundingType() != null) {
+				bindTypeParameters( wildcardReference.getBoundingType(), actualTypeRef, bindings );
 
 			}
 
-			if (typeParameterName != null && ! typeParameterName.isBlank()) {
-				bindings.putIfAbsent( typeParameterName, actualTypeRef );
+			return;
+
+		}
+
+		if (actualTypeRef instanceof CtWildcardReference wildcardReference && wildcardReference.getBoundingType() != null) {
+			actualTypeRef = resolveSourceBackedTypeReference( wildcardReference.getBoundingType() );
+
+		}
+
+		if (formalTypeRef instanceof CtTypeParameterReference typeParameterReference) {
+			String typeParameterKey = typeParameterKey( typeParameterReference );
+
+			if (typeParameterKey != null && ! typeParameterKey.isBlank()) {
+				CtTypeReference<?> currentBinding = bindings.get( typeParameterKey );
+				bindings.put( typeParameterKey, chooseMoreSpecificType( currentBinding, actualTypeRef ) );
 
 			}
 
@@ -2574,7 +3758,12 @@ public class HandlerParser {
 		}
 
 		if (! formalQualifiedName.equals( actualQualifiedName )) {
-			return;
+			actualTypeRef = projectToSuperType( actualTypeRef, formalQualifiedName );
+
+			if (actualTypeRef == null) {
+				return;
+
+			}
 
 		}
 
@@ -2606,15 +3795,25 @@ public class HandlerParser {
 
 		}
 
-		if (typeRef instanceof CtTypeParameterReference typeParameterReference) {
-			String typeParameterName = typeParameterReference.getSimpleName();
+		if (typeRef instanceof CtWildcardReference wildcardReference) {
+			CtWildcardReference resolvedWildcardReference = wildcardReference.clone();
 
-			if (typeParameterReference.getDeclaration() != null) {
-				typeParameterName = typeParameterReference.getDeclaration().getSimpleName();
+			if (wildcardReference.getBoundingType() != null) {
+				CtTypeReference<?> resolvedBoundingType = applyTypeBindings( wildcardReference.getBoundingType(), bindings );
+
+				if (resolvedBoundingType != null) {
+					resolvedWildcardReference.setBoundingType( resolvedBoundingType );
+
+				}
 
 			}
 
-			CtTypeReference<?> boundTypeRef = bindings.get( typeParameterName );
+			return resolvedWildcardReference;
+
+		}
+
+		if (typeRef instanceof CtTypeParameterReference typeParameterReference) {
+			CtTypeReference<?> boundTypeRef = bindings.get( typeParameterKey( typeParameterReference ) );
 
 			return boundTypeRef != null ? resolveSourceBackedTypeReference( boundTypeRef ) : typeRef;
 
@@ -2640,110 +3839,7 @@ public class HandlerParser {
 
 	}
 
-	private CtTypeReference<?> extractBoundTypeFromReturnType(
-		CtTypeReference<?> returnTypeRef, Map<String, CtTypeReference<?>> bindings
-	) {
 
-		returnTypeRef = resolveSourceBackedTypeReference( returnTypeRef );
-
-		if (returnTypeRef == null) {
-			return null;
-
-		}
-
-		if (returnTypeRef instanceof CtTypeParameterReference typeParameterReference) {
-			String typeParameterName = typeParameterReference.getSimpleName();
-
-			if (typeParameterReference.getDeclaration() != null) {
-				typeParameterName = typeParameterReference.getDeclaration().getSimpleName();
-
-			}
-
-			return bindings.get( typeParameterName );
-
-		}
-
-		List<CtTypeReference<?>> actualTypeArguments = returnTypeRef.getActualTypeArguments();
-
-		if (actualTypeArguments == null || actualTypeArguments.isEmpty()) {
-			return null;
-
-		}
-
-		for (CtTypeReference<?> actualTypeArgument : actualTypeArguments) {
-			CtTypeReference<?> boundTypeRef = extractBoundTypeFromReturnType( actualTypeArgument, bindings );
-
-			if (boundTypeRef != null) {
-				return boundTypeRef;
-
-			}
-
-		}
-
-		return null;
-
-	}
-
-	/**
-	 * spoon으로 제너릭 타입을 정확하게 가져올 수 없을 때 수동 파서
-	 * 
-	 * @param factoryMethodCall
-	 * 
-	 * @return
-	 */
-	private CtTypeReference<?> manuallyInferResponseType(
-		CtInvocation<?> factoryMethodCall
-	) {
-
-		if (factoryMethodCall == null || factoryMethodCall.getExecutable() == null) {
-			return null;
-
-		}
-
-		for (CtMethod<?> candidate : resolveInvocationMethods( factoryMethodCall )) {
-			CtTypeReference<?> returnTypeRef = resolveSourceBackedTypeReference( candidate.getType() );
-
-			if (returnTypeRef == null) {
-				continue;
-
-			}
-
-			Set<String> returnTypeParameterNames = new HashSet<>();
-			collectTypeParameterNames( returnTypeRef, returnTypeParameterNames );
-
-			if (returnTypeParameterNames.isEmpty()) {
-				continue;
-
-			}
-
-			Map<String, CtTypeReference<?>> bindings = new HashMap<>();
-			int loopSize = Math.min( candidate.getParameters().size(), factoryMethodCall.getArguments().size() );
-
-			for (int i = 0; i < loopSize; i++) {
-				CtTypeReference<?> formalParameterTypeRef = resolveSourceBackedTypeReference( candidate.getParameters().get( i ).getType() );
-				CtTypeReference<?> actualArgumentTypeRef = resolveActualArgumentTypeForGenericInference( factoryMethodCall.getArguments().get( i ) );
-
-				bindTypeParameters( formalParameterTypeRef, actualArgumentTypeRef, bindings );
-
-			}
-
-			if (! returnTypeParameterNames.stream().allMatch( bindings::containsKey )) {
-				continue;
-
-			}
-
-			CtTypeReference<?> inferredReturnTypeRef = applyTypeBindings( returnTypeRef, bindings );
-
-			if (inferredReturnTypeRef != null) {
-				return resolveSourceBackedTypeReference( inferredReturnTypeRef );
-
-			}
-
-		}
-
-		return null;
-
-	}
 
 	// JDK 컨테이너 타입들 (List, Map, Optional 등) 필터용
 	private boolean isJdkContainerType(
