@@ -441,6 +441,67 @@ public class HandlerParser {
 
 	}
 
+	private List<CtMethod<?>> findCandidateMethods(
+		CtInvocation<?> invocation, CtType<?> declaringType
+	) {
+
+		if (invocation == null || invocation.getExecutable() == null || declaringType == null) {
+			return List.of();
+
+		}
+
+		List<CtMethod<?>> candidates = findCandidateMethods( invocation.getExecutable(), declaringType );
+
+		if (! candidates.isEmpty()) {
+			return candidates;
+
+		}
+
+		return declaringType
+			.getMethods()
+			.stream()
+			.filter( method -> method.getSimpleName().equals( invocation.getExecutable().getSimpleName() ) )
+			.filter( method -> method.getParameters().size() == invocation.getArguments().size() )
+			.filter( method -> {
+
+				for (int i = 0; i < method.getParameters().size(); i++) {
+					CtTypeReference<?> declaredType = resolveSourceBackedTypeReference( method.getParameters().get( i ).getType() );
+					CtTypeReference<?> invokedType = resolveSourceBackedTypeReference( invocation.getArguments().get( i ).getType() );
+
+					if (declaredType == null || invokedType == null || declaredType instanceof CtTypeParameterReference) {
+						continue;
+
+					}
+
+					String declaredQualifiedName = declaredType.getTypeErasure().getQualifiedName();
+					String invokedQualifiedName = invokedType.getTypeErasure().getQualifiedName();
+
+					if (declaredQualifiedName == null || invokedQualifiedName == null || declaredQualifiedName.equals( invokedQualifiedName )) {
+						continue;
+
+					}
+
+					Class<?> declaredClass = loadClassFromTypeReference( declaredType );
+					Class<?> invokedClass = loadClassFromTypeReference( invokedType );
+
+					if (declaredClass != null && declaredClass != Object.class
+						&& invokedClass != null && invokedClass != Object.class
+						&& declaredClass.isAssignableFrom( invokedClass )) {
+						continue;
+
+					}
+
+					return false;
+
+				}
+
+				return true;
+
+			} )
+			.collect( Collectors.toList() );
+
+	}
+
 	private void parseMethodBody(
 		CtMethod<?> method, HandlerInfo handlerInfo, String routeName
 	) {
@@ -574,32 +635,30 @@ public class HandlerParser {
 
 			CtExecutableReference<?> execRef = inv.getExecutable();
 
-			// 기존에도 ServerRequest를 받는 helper만 따라갔다. 대부분의 service/map/filter 호출은
-			// 선언부를 해석할 필요가 없으므로 먼저 signature/argument로 걸러낸다.
-			if (execRef != null
-				&& (execRef.getParameters().stream().anyMatch( p -> p != null && "ServerRequest".equals( p.getSimpleName() ) )
-					|| inv.getArguments().stream().anyMatch( arg -> arg.getType() != null && "ServerRequest".equals( arg.getType().getSimpleName() ) ))) {
+			if (execRef != null && ! inv.getArguments().isEmpty()) {
+				List<CtMethod<?>> candidates = List.of();
+
 				if (execRef.getDeclaration() instanceof CtMethod<?> method) {
-					applyOperationDocumentation( method, handlerInfo );
-					parseMethodBody( method, handlerInfo, routeName );
+					candidates = List.of( method );
 
 				} else {
 					CtType<?> declaringType = resolveDeclaringType( execRef );
 
 					if (declaringType != null) {
+						candidates = findCandidateMethods( inv, declaringType );
 
-						for (CtMethod<?> candidate : findCandidateMethods( execRef, declaringType )) {
+					}
 
-							if (candidate
-								.getParameters()
-								.stream()
-								.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) )) {
-								applyOperationDocumentation( candidate, handlerInfo );
-								parseMethodBody( candidate, handlerInfo, routeName );
+				}
 
-							}
+				for (CtMethod<?> candidate : candidates) {
 
-						}
+					if (candidate
+						.getParameters()
+						.stream()
+						.anyMatch( p -> p.getType() != null && "ServerRequest".equals( p.getType().getSimpleName() ) )) {
+						applyOperationDocumentation( candidate, handlerInfo );
+						parseMethodBody( candidate, handlerInfo, routeName );
 
 					}
 
@@ -957,9 +1016,9 @@ public class HandlerParser {
 	}
 
 	/**
-	 * request query/path expression이 최종적으로 대입되는 로컬 변수를 표현식 범위 안에서 추적한다.
-	 * 최종 변수 타입이 request parameter로 지원되는 Java 타입인 경우에만 해당 타입을 사용하고,
-	 * DTO 등 지원하지 않는 타입이면 원래 request expression 타입을 유지한다.
+	 * request query/path expression의 타입을 실제 사용 지점까지 추적한다.
+	 * 로컬 변수에 대입되는 경우에는 최종 변수 타입을 우선 사용하고, 그렇지 않은 경우에는
+	 * Optional/Collection 처리와 명시적인 변환 호출까지만 따라간다.
 	 */
 	private CtTypeReference<?> determineRequestParameterType(
 		CtInvocation<?> inv
@@ -967,9 +1026,34 @@ public class HandlerParser {
 
 		CtLocalVariable<?> variable = determineRequestParameterVariable( inv );
 		CtTypeReference<?> assignedType = variable == null ? null : resolveSourceBackedTypeReference( variable.getType() );
-		CtTypeReference<?> result = isSupportedRequestParameterType( assignedType )
-			? assignedType
-			: resolveSourceBackedTypeReference( inv.getType() );
+
+		if (isSupportedRequestParameterType( assignedType )) {
+			return unwrapOptionalRequestParameterType( assignedType );
+
+		}
+
+		CtTypeReference<?> result = resolveSourceBackedTypeReference( inv.getType() );
+		CtElement current = inv;
+
+		while (current != null) {
+			CtElement parent = current.getParent();
+
+			if (! (parent instanceof CtInvocation<?> parentInv)) {
+				break;
+
+			}
+
+			CtTypeReference<?> candidate = resolveSourceBackedTypeReference( parentInv.getType() );
+
+			if (! isRequestParameterTransformation( parentInv, current, result, candidate )) {
+				break;
+
+			}
+
+			result = candidate;
+			current = parentInv;
+
+		}
 
 		return unwrapOptionalRequestParameterType( result != null ? result : inv.getType() );
 
@@ -1048,6 +1132,16 @@ public class HandlerParser {
 
 			if (isCollectionType( sourceType )) {
 				return "get".equals( methodName );
+
+			}
+
+			Class<?> sourceClass = loadClassFromTypeReference( sourceType );
+
+			if (invocation.getArguments().isEmpty()
+				&& sourceClass != null && sourceClass != Object.class
+				&& Number.class.isAssignableFrom( sourceClass )
+				&& methodName.endsWith( "Value" )) {
+				return true;
 
 			}
 
@@ -1979,56 +2073,18 @@ public class HandlerParser {
 			}
 
 			if (responseFactoryInvocation != null) {
-				CtTypeReference<?> payloadTypeRef = manuallyInferResponseType( responseFactoryInvocation );
+				CtTypeReference<?> inferredResponseTypeRef = manuallyInferResponseType( responseFactoryInvocation );
+				CtTypeReference<?> resolvedFirstArgTypeRef = resolveSourceBackedTypeReference( firstArgTypeRef );
 
-
-				if (payloadTypeRef != null && firstArgTypeRef != null) {
-					CtTypeReference<?> resolvedFirstArgTypeRef = resolveSourceBackedTypeReference( firstArgTypeRef );
-
-
-					if (resolvedFirstArgTypeRef != null && "reactor.core.publisher.Mono"
-						.equals( resolvedFirstArgTypeRef.getQualifiedName() ) && resolvedFirstArgTypeRef.getActualTypeArguments().size() == 1) {
-
-						CtTypeReference<?> outerGenericRef = resolveSourceBackedTypeReference(
-							resolvedFirstArgTypeRef.getActualTypeArguments().get( 0 )
-						);
-
-						if (outerGenericRef != null && outerGenericRef.getActualTypeArguments().size() == 1) {
-
-							CtTypeReference<?> wrapperPayloadRef = resolveSourceBackedTypeReference(
-								outerGenericRef.getActualTypeArguments().get( 0 )
-							);
-
-
-							if (wrapperPayloadRef != null && ("reactor.core.publisher.Mono".equals( wrapperPayloadRef.getQualifiedName() ) || "reactor.core.publisher.Flux"
-								.equals( wrapperPayloadRef.getQualifiedName() )) && (wrapperPayloadRef.getActualTypeArguments() == null || wrapperPayloadRef.getActualTypeArguments().isEmpty())) {
-
-								CtTypeReference<?> repairedWrapperPayloadRef = wrapperPayloadRef.clone();
-								repairedWrapperPayloadRef.setActualTypeArguments( List.of( resolveSourceBackedTypeReference( payloadTypeRef ) ) );
-
-								CtTypeReference<?> repairedOuterGenericRef = outerGenericRef.clone();
-								repairedOuterGenericRef.setActualTypeArguments( List.of( repairedWrapperPayloadRef ) );
-
-								CtTypeReference<?> repairedFirstArgTypeRef = resolvedFirstArgTypeRef.clone();
-								repairedFirstArgTypeRef.setActualTypeArguments( List.of( repairedOuterGenericRef ) );
-
-								firstArgTypeRef = repairedFirstArgTypeRef;
-								isParseFailedFlag = true;
-
-
-							}
-
-						}
-
-					}
+				if (inferredResponseTypeRef != null
+					&& (resolvedFirstArgTypeRef == null
+						|| (resolvedFirstArgTypeRef.getQualifiedName() != null
+							&& resolvedFirstArgTypeRef.getQualifiedName().equals( inferredResponseTypeRef.getQualifiedName() )
+							&& typeReferenceSpecificity( inferredResponseTypeRef ) > typeReferenceSpecificity( resolvedFirstArgTypeRef )))) {
+					firstArgTypeRef = inferredResponseTypeRef;
+					isParseFailedFlag = true;
 
 				}
-
-			}
-
-			if (firstArgTypeRef == null && responseFactoryInvocation != null) {
-				firstArgTypeRef = manuallyInferResponseType( responseFactoryInvocation );
-				isParseFailedFlag = true;
 
 			}
 
@@ -2401,7 +2457,15 @@ public class HandlerParser {
 		}
 
 		if (! formalQualifiedName.equals( actualQualifiedName )) {
-			return;
+			Class<?> formalClass = loadClassFromTypeReference( formalTypeRef );
+			Class<?> actualClass = loadClassFromTypeReference( actualTypeRef );
+
+			if (formalClass == null || formalClass == Object.class
+				|| actualClass == null || actualClass == Object.class
+				|| ! formalClass.isAssignableFrom( actualClass )) {
+				return;
+
+			}
 
 		}
 
@@ -2422,18 +2486,18 @@ public class HandlerParser {
 
 	}
 
-	private CtTypeReference<?> extractBoundTypeFromReturnType(
-		CtTypeReference<?> returnTypeRef, Map<String, CtTypeReference<?>> bindings
+	private CtTypeReference<?> applyTypeBindings(
+		CtTypeReference<?> typeRef, Map<String, CtTypeReference<?>> bindings
 	) {
 
-		returnTypeRef = resolveSourceBackedTypeReference( returnTypeRef );
+		typeRef = resolveSourceBackedTypeReference( typeRef );
 
-		if (returnTypeRef == null) {
+		if (typeRef == null) {
 			return null;
 
 		}
 
-		if (returnTypeRef instanceof CtTypeParameterReference typeParameterReference) {
+		if (typeRef instanceof CtTypeParameterReference typeParameterReference) {
 			String typeParameterName = typeParameterReference.getSimpleName();
 
 			if (typeParameterReference.getDeclaration() != null) {
@@ -2441,28 +2505,58 @@ public class HandlerParser {
 
 			}
 
-			return bindings.get( typeParameterName );
+			CtTypeReference<?> boundTypeRef = bindings.get( typeParameterName );
+
+			return boundTypeRef != null ? resolveSourceBackedTypeReference( boundTypeRef ) : typeRef;
 
 		}
 
-		List<CtTypeReference<?>> actualTypeArguments = returnTypeRef.getActualTypeArguments();
+		CtTypeReference<?> resolvedTypeRef = typeRef.clone();
+		List<CtTypeReference<?>> actualTypeArguments = typeRef.getActualTypeArguments();
 
-		if (actualTypeArguments == null || actualTypeArguments.isEmpty()) {
-			return null;
+		if (actualTypeArguments != null && ! actualTypeArguments.isEmpty()) {
+			List<CtTypeReference<?>> resolvedTypeArguments = new ArrayList<>( actualTypeArguments.size() );
+
+			for (CtTypeReference<?> actualTypeArgument : actualTypeArguments) {
+				CtTypeReference<?> resolvedTypeArgument = applyTypeBindings( actualTypeArgument, bindings );
+
+				resolvedTypeArguments.add( resolvedTypeArgument != null ? resolvedTypeArgument : actualTypeArgument );
+
+			}
+
+			resolvedTypeRef.setActualTypeArguments( resolvedTypeArguments );
 
 		}
 
-		for (CtTypeReference<?> actualTypeArgument : actualTypeArguments) {
-			CtTypeReference<?> boundTypeRef = extractBoundTypeFromReturnType( actualTypeArgument, bindings );
+		return resolvedTypeRef;
 
-			if (boundTypeRef != null) {
-				return boundTypeRef;
+	}
+
+	private int typeReferenceSpecificity(
+		CtTypeReference<?> typeRef
+	) {
+
+		typeRef = resolveSourceBackedTypeReference( typeRef );
+
+		if (typeRef == null || typeRef instanceof CtTypeParameterReference) {
+			return 0;
+
+		}
+
+		String simpleName = typeRef.getSimpleName();
+		String qualifiedName = typeRef.getQualifiedName();
+		int result = simpleName == null || simpleName.startsWith( "?" ) || "Object".equals( simpleName ) || "java.lang.Object".equals( qualifiedName ) ? 0 : 1;
+
+		if (typeRef.getActualTypeArguments() != null) {
+
+			for (CtTypeReference<?> actualTypeArgument : typeRef.getActualTypeArguments()) {
+				result += typeReferenceSpecificity( actualTypeArgument );
 
 			}
 
 		}
 
-		return null;
+		return result;
 
 	}
 
@@ -2491,12 +2585,7 @@ public class HandlerParser {
 
 		}
 
-		List<CtMethod<?>> candidates = declaringType
-			.getMethods()
-			.stream()
-			.filter( m -> m.getSimpleName().equals( executableReference.getSimpleName() ) )
-			.filter( m -> m.getParameters().size() == factoryMethodCall.getArguments().size() )
-			.collect( Collectors.toList() );
+		List<CtMethod<?>> candidates = findCandidateMethods( factoryMethodCall, declaringType );
 
 		for (int c = 0; c < candidates.size(); c++) {
 			CtMethod<?> candidate = candidates.get( c );
@@ -2540,10 +2629,10 @@ public class HandlerParser {
 
 			}
 
-			CtTypeReference<?> boundTypeRef = extractBoundTypeFromReturnType( returnTypeRef, bindings );
+			CtTypeReference<?> inferredReturnTypeRef = applyTypeBindings( returnTypeRef, bindings );
 
-			if (boundTypeRef != null) {
-				return resolveSourceBackedTypeReference( boundTypeRef );
+			if (inferredReturnTypeRef != null) {
+				return resolveSourceBackedTypeReference( inferredReturnTypeRef );
 
 			}
 
